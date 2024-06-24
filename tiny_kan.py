@@ -13,25 +13,101 @@ import matplotlib.pyplot as plt
 from b_spline import coef2curve, plot_random_spline
 
 
+def init(size) -> Tensor:
+    return Tensor.uniform(size, low=-0.2, high=0.2)
+
+
 class BatchKANCubicLayer:
-    def __init__(self, in_count: int, out_count: int):
-        self.a = Tensor.uniform((out_count, in_count), low=-0.2, high=0.2)
-        self.b = Tensor.uniform((out_count, in_count), low=-0.2, high=0.2)
-        self.c = Tensor.uniform((out_count, in_count), low=-0.2, high=0.2)
-        self.d = Tensor.uniform((out_count, in_count), low=-0.2, high=0.2)
+    def __init__(self, in_count: int, out_count: int, **kwargs):
+        self.a = init((out_count, in_count))
+        self.b = init((out_count, in_count))
+        self.c = init((out_count, in_count))
+
+        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
 
     def __call__(self, x: Tensor):
         # x is of shape (batch_size, in_count)
         x = x.unsqueeze(1)
         # x is now of shape (batch_size, 1, in_count)
 
-        y = self.a * x.pow(3) + self.b * x.pow(2) + self.c * x + self.d
+        y = self.a * x.pow(3) + self.b * x.pow(2) + self.c * x
         y = y.sum(axis=-1)
+
+        y = y + self.bias
 
         return y
 
     def get_learnable_params(self):
-        params = [self.a, self.b, self.c, self.d]
+        params = [
+            self.a,
+            self.b,
+            self.c,
+            self.bias,
+        ]
+        return params
+
+
+class BatchKANQuadraticLayer:
+    def __init__(self, in_count: int, out_count: int, use_tanh=True, **kwargs):
+        self.a = init((out_count, in_count))
+        self.b = init((out_count, in_count))
+
+        self.tanh_weights = (
+            Tensor.uniform((out_count,), low=0.4, high=0.6) if use_tanh else None
+        )
+        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+
+    def __call__(self, x: Tensor):
+        # x is of shape (batch_size, in_count)
+        x = x.unsqueeze(1)
+        # x is now of shape (batch_size, 1, in_count)
+
+        y = self.a * x.pow(2) + self.b * x
+        y = y.sum(axis=-1)
+
+        if self.tanh_weights is not None:
+            y = (y * self.tanh_weights).tanh() + (1 - self.tanh_weights) * y
+        y = y + self.bias
+
+        return y
+
+    def get_learnable_params(self):
+        params = [
+            self.a,
+            self.b,
+            self.bias,
+        ]
+        if self.tanh_weights is not None:
+            params.append(self.tanh_weights)
+        return params
+
+
+class BatchKANLinearLayer:
+    def __init__(self, in_count: int, out_count: int, **kwargs):
+        self.a = init((out_count, in_count))
+
+        self.tan_weights = Tensor.uniform((out_count,), low=0.4, high=0.6)
+        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+
+    def __call__(self, x: Tensor):
+        # x is of shape (batch_size, in_count)
+        x = x.unsqueeze(1)
+        # x is now of shape (batch_size, 1, in_count)
+
+        y = self.a * x
+        y = y.sum(axis=-1)
+
+        y = (y * self.tan_weights).tanh() + (1 - self.tan_weights) * y
+        y = y + self.bias
+
+        return y
+
+    def get_learnable_params(self):
+        params = [
+            self.a,
+            self.bias,
+            self.tan_weights,
+        ]
         return params
 
 
@@ -133,23 +209,25 @@ class HiddenLayerDef:
 
 class KAN:
     def __init__(
-        self, in_count: int, out_count: int, hidden_layer_defs: List[HiddenLayerDef]
+        self,
+        in_count: int,
+        out_count: int,
+        hidden_layer_defs: List[HiddenLayerDef],
+        Layer=BatchKANCubicLayer,
+        layer_params: dict = {},
     ):
-        self.layers = [
-            BatchKANCubicBSplineLayer(in_count, hidden_layer_defs[0].out_count)
-        ]
+        self.layers = [Layer(in_count, hidden_layer_defs[0].out_count)]
         for i in range(1, len(hidden_layer_defs)):
             self.layers.append(
-                BatchKANCubicBSplineLayer(
+                Layer(
                     hidden_layer_defs[i - 1].out_count,
                     hidden_layer_defs[i].out_count,
-                    hidden_layer_defs[i].num_knots,
-                    hidden_layer_defs[i].spline_order,
+                    num_knots=hidden_layer_defs[i].num_knots,
+                    spline_order=hidden_layer_defs[i].spline_order,
+                    **layer_params,
                 )
             )
-        self.layers.append(
-            BatchKANCubicBSplineLayer(hidden_layer_defs[-1].out_count, out_count)
-        )
+        self.layers.append(Layer(hidden_layer_defs[-1].out_count, out_count))
 
     def __call__(self, x: Tensor):
         for layer in self.layers:
@@ -168,12 +246,7 @@ class KAN:
         input_domain=(-1, 1),
         resolution=100,
     ):
-        input_domain_width = input_domain[1] - input_domain[0]
-        x = np.linspace(
-            input_domain[0] - input_domain_width * 0.5,
-            input_domain[1] + input_domain_width * 0.5,
-            resolution,
-        )
+        x = np.linspace(input_domain[0], input_domain[1], resolution)
         y_true = [target_fn(Tensor([i])).numpy()[0] for i in x]
         y_pred = self(Tensor(x).reshape(resolution, 1)).reshape(resolution).numpy()
 
@@ -183,21 +256,44 @@ class KAN:
         plt.legend()
         plt.show()
 
+    def plot_neuron_responses(self, input_domain=(-1, 1), resolution=100):
+        """
+        Plots the response of each neuron in the network with subplots
+        """
+
+        x = np.linspace(input_domain[0], input_domain[1], resolution)
+        x = Tensor(x).unsqueeze(1)
+        x = x.expand(resolution, 1)
+
+        prev_layer_output = x
+        for i, layer in enumerate(self.layers):
+            y = layer(prev_layer_output).numpy()
+            for j in range(y.shape[1]):
+                plt.subplot(len(self.layers), y.shape[1], i * y.shape[1] + j + 1)
+                plt.plot(x.numpy(), y[:, j])
+            prev_layer_output = Tensor(y)
+
+        plt.show()
+
 
 def run_model():
     model = KAN(
         1,
         1,
-        [HiddenLayerDef(4, 8, 3), HiddenLayerDef(4, 8, 3)],
+        [HiddenLayerDef(4), HiddenLayerDef(4), HiddenLayerDef(4)],
+        Layer=BatchKANQuadraticLayer,
+        layer_params={"use_tanh": False},
     )
 
     all_params = model.get_learnable_params()
 
-    opt = nn.optim.Adam(list(all_params), lr=0.001)
+    opt = nn.optim.Adam(list(all_params), lr=0.01)
 
     def target_fn(x: Tensor):
-        x_abs = (x * 1.5).abs()
-        return x + x_abs - x_abs.trunc()
+        # x_abs = (x * 1.5).abs()
+        # return x + x_abs - x_abs.trunc()
+
+        return ((x * 8).sin() * 80).tanh()
 
     input_range = (-2, 2)
 
@@ -218,22 +314,19 @@ def run_model():
 
             y_pred = model(x)
             y_actual = target_fn(x)
-            loss = (y_pred - y_actual).pow(2).sum()
+            loss = (y_pred - y_actual).pow(2).mean()
             loss = loss.backward()
             opt.step()
             return loss
 
     with Tensor.train():
-        for step in range(50000):
+        for step in range(30000):
             x = Tensor(generate_input(batch_size))
             loss = train_step(x)
             print(f"step: {step}, loss: {loss.numpy()}")
 
+    model.plot_neuron_responses(input_domain=input_range)
     model.plot_response(target_fn, input_domain=input_range)
 
 
 run_model()
-
-# spline = BatchKANCubicBSplineLayer(12, 4, 2, 2)
-
-# spline.plot_response(input_range=(-10, 10))
