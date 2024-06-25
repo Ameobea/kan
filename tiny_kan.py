@@ -10,7 +10,7 @@ import numpy as np
 from typing import Callable, List
 import matplotlib.pyplot as plt
 
-from b_spline import coef2curve, plot_random_spline
+from b_spline import coef2curve
 
 
 def init(size) -> Tensor:
@@ -48,7 +48,7 @@ class BatchKANCubicLayer:
 
 
 class BatchKANQuadraticLayer:
-    def __init__(self, in_count: int, out_count: int, use_tanh=True, **kwargs):
+    def __init__(self, in_count: int, out_count: int, use_tanh=False, **kwargs):
         self.a = init((out_count, in_count))
         self.b = init((out_count, in_count))
 
@@ -203,8 +203,6 @@ class BatchKANCubicBSplineLayer:
 @dataclass
 class HiddenLayerDef:
     out_count: int
-    num_knots: int = 2
-    spline_order: int = 3
 
 
 class KAN:
@@ -216,14 +214,16 @@ class KAN:
         Layer=BatchKANCubicLayer,
         layer_params: dict = {},
     ):
+        if len(hidden_layer_defs) == 0:
+            self.layers = [Layer(in_count, out_count, **layer_params)]
+            return
+
         self.layers = [Layer(in_count, hidden_layer_defs[0].out_count)]
         for i in range(1, len(hidden_layer_defs)):
             self.layers.append(
                 Layer(
                     hidden_layer_defs[i - 1].out_count,
                     hidden_layer_defs[i].out_count,
-                    num_knots=hidden_layer_defs[i].num_knots,
-                    spline_order=hidden_layer_defs[i].spline_order,
                     **layer_params,
                 )
             )
@@ -280,7 +280,7 @@ def run_model():
     model = KAN(
         1,
         1,
-        [HiddenLayerDef(4), HiddenLayerDef(4), HiddenLayerDef(4)],
+        [HiddenLayerDef(4)],
         Layer=BatchKANQuadraticLayer,
         layer_params={"use_tanh": False},
     )
@@ -293,17 +293,14 @@ def run_model():
         # x_abs = (x * 1.5).abs()
         # return x + x_abs - x_abs.trunc()
 
-        return ((x * 8).sin() * 80).tanh()
+        # return ((x * 8).sin() * 80).tanh()
+        # return 1 if x < 0 else -1
+        return (x < 0).where(1, -1)
 
     input_range = (-2, 2)
 
     def generate_input(batch_size) -> float:
         return np.random.uniform(input_range[0], input_range[1], (batch_size, 1))
-
-    @TinyJit
-    def train_step() -> Tensor:
-        with Tensor.train():
-            opt.zero_grad()
 
     batch_size = 32
 
@@ -329,4 +326,5 @@ def run_model():
     model.plot_response(target_fn, input_domain=input_range)
 
 
-run_model()
+if __name__ == "__main__":
+    run_model()
