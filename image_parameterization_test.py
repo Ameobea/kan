@@ -46,9 +46,7 @@ def encode_inputs(
     return np.array(inputs)
 
 
-def target_fn(coords: Tensor) -> Tensor:
-    # SDF-style.  We want to learn a circle centered at the origin with radius 0.5
-    #
+def bottom_left_quadrant(coords: Tensor) -> Tensor:
     # expects `coords` to be a tensor of shape (batch_size, 2)
     #
     # binarized so that points inside the circle are 1, outside are -1
@@ -64,6 +62,29 @@ def target_fn(coords: Tensor) -> Tensor:
     # TODO TEMP
     out = ((coords[:, 0] < 0) * (coords[:, 1] < 0)).where(1, -1).unsqueeze(1)
     return out
+
+
+def circle(coords: Tensor) -> Tensor:
+    # SDF-style.  We want to learn a circle centered at the origin with radius 0.5
+    #
+    # expects `coords` to be a tensor of shape (batch_size, 2)
+    #
+    # binarized so that points inside the circle are 1, outside are -1
+
+    assert len(coords.shape) == 2
+    assert coords.shape[1] == 2
+
+    if len(coords.shape) == 1:
+        coords = coords.unsqueeze(0)
+    elif len(coords.shape) == 0:
+        coords = coords.unsqueeze(0).unsqueeze(0)
+
+    dist = (coords**2).sum(axis=1).sqrt()
+    out = (dist < 0.5).where(1, -1).unsqueeze(1)
+    return out
+
+
+target_fn = circle
 
 
 def plot_target_fn(resolution=100, input_range=(-1, 1)):
@@ -98,28 +119,27 @@ def plot_model_response(
 
 
 def train_model():
-    channels_per_dim = 4
-    input_range = (-0.5, 0.5)
+    channels_per_dim = 8
+    input_range = (-1, 1)
     model = KAN(
         2 * channels_per_dim,
         1,
-        [HiddenLayerDef(8), HiddenLayerDef(4)],
-        Layer=BatchKANQuadraticLayer,
+        [HiddenLayerDef(16), HiddenLayerDef(16), HiddenLayerDef(16), HiddenLayerDef(8)],
+        Layer=BatchKANCubicLayer,
         layer_params={"use_tanh": False},
     )
     # plot_model_response(model)
     all_params = model.get_learnable_params()
 
-    opt = nn.optim.Adam(list(all_params), lr=0.005)
-    batch_size = 32
+    opt = nn.optim.Adam(list(all_params), lr=0.001)
+    batch_size = 256
 
     @TinyJit
     def train_step(unencoded_x: Tensor, encoded_x: Tensor) -> Tensor:
         with Tensor.train():
             opt.zero_grad()
 
-            y_pred = model(encoded_x)
-            # y_pred = y_pred.tanh()
+            y_pred = model(encoded_x).tanh()
             assert y_pred.shape == (batch_size, 1)
             y_actual = target_fn(unencoded_x)
             assert y_actual.shape == (batch_size, 1)
@@ -130,7 +150,7 @@ def train_model():
             return loss
 
     with Tensor.train():
-        for step in range(10000):
+        for step in range(50000):
             x = get_random_unencoded_inputs(batch_size, input_range=input_range)
             encoded_x = encode_inputs(
                 x.numpy(), channels_per_dim=channels_per_dim, input_range=input_range
