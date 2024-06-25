@@ -14,7 +14,8 @@ from tiny_kan import (
     BatchKANLinearLayer,
     HiddenLayerDef,
 )
-from shape_checker import check_shapes
+from shape_checker import check_shapes, check_shape
+from tiny_nn import TinyNN
 
 
 def encode_coord(
@@ -37,7 +38,7 @@ def encode_coord(
     return np.array(channels, dtype=np.float32)
 
 
-@check_shapes([(None, 2), dtypes.float32])
+@check_shapes(ret=[(None, 2), dtypes.float32])
 def get_random_unencoded_inputs(batch_size=1, input_range=(-1, 1)) -> Tensor:
     return Tensor.uniform((batch_size, 2), low=input_range[0], high=input_range[1])
 
@@ -87,7 +88,7 @@ def circle(coords: Tensor) -> Tensor:
     return out
 
 
-@check_shapes([(None, 2), dtypes.float32], ret=(None, 1))
+@check_shapes([(None, 2), dtypes.float32], ret=[(None, 1), dtypes.float32])
 def ridges(coords: Tensor) -> Tensor:
     if len(coords.shape) == 1:
         coords = coords.unsqueeze(0)
@@ -98,7 +99,7 @@ def ridges(coords: Tensor) -> Tensor:
     return (scaled - scaled.trunc() > 0.5).unsqueeze(1)
 
 
-@check_shapes([(None, 2), dtypes.float32], ret=(None, 1))
+@check_shapes([(None, 2), dtypes.float32], ret=[(None, 1), dtypes.float32])
 def stitches(coords: Tensor) -> Tensor:
     if len(coords.shape) == 1:
         coords = coords.unsqueeze(0)
@@ -108,28 +109,38 @@ def stitches(coords: Tensor) -> Tensor:
     scaled = coords[:, 0].abs() * 5.0
     out = scaled - scaled.trunc() > 0.5
     out = out * (coords[:, 1] < 0.5) * (coords[:, 1] > -0.5)
-    return out.unsqueeze(1)
+    return out.unsqueeze(1).where(1.0, -1.0)
 
 
 target_fn = stitches
 
 
-def plot_target_fn(resolution=100, input_range=(-1, 1)):
+def plot_target_fn(resolution=100, input_range=(-1, 1), output_range=(-1, 1)):
     import matplotlib.pyplot as plt
 
     x = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     y = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     X, Y = np.meshgrid(x, y)
     coords = np.stack([X.ravel(), Y.ravel()], axis=1)
-    Z = target_fn(Tensor(coords)).reshape(X.shape).numpy()
+    coords = Tensor(coords)
+    check_shape(coords, [(resolution**2, 2), dtypes.float32])
+    Z = target_fn(coords).reshape(X.shape)
+    check_shape(Z, [(resolution, resolution), dtypes.float32])
+    Z = Z.numpy()
 
-    plt.contourf(X, Y, Z, levels=2, cmap="coolwarm")
+    plt.contourf(
+        X, Y, Z, levels=2, cmap="coolwarm", vmin=output_range[0], vmax=output_range[1]
+    )
     plt.colorbar()
     plt.show()
 
 
 def plot_model_response(
-    model: KAN, channels_per_dim=4, input_range=(-1, 1), resolution=100
+    model: KAN,
+    channels_per_dim=4,
+    input_range=(-1, 1),
+    output_range=(-1, 1),
+    resolution=100,
 ):
     import matplotlib.pyplot as plt
 
@@ -140,7 +151,9 @@ def plot_model_response(
     coords = encode_inputs(coords, channels_per_dim=channels_per_dim)
     Z = model(Tensor(coords)).reshape(X.shape).tanh().numpy()
 
-    plt.contourf(X, Y, Z, levels=2, cmap="coolwarm")
+    plt.contourf(
+        X, Y, Z, levels=2, cmap="coolwarm", vmin=output_range[0], vmax=output_range[1]
+    )
     plt.colorbar()
     plt.show()
 
@@ -152,16 +165,21 @@ def train_model():
         2 * channels_per_dim,
         1,
         [
-            HiddenLayerDef(8),
             HiddenLayerDef(4),
             HiddenLayerDef(4),
-            HiddenLayerDef(4),
+            HiddenLayerDef(2),
+            HiddenLayerDef(2),
         ],
         Layer=BatchKANQuadraticLayer,
     )
-    all_params = model.get_learnable_params()
 
-    opt = nn.optim.Adam(list(all_params), lr=0.0005)
+    # model = TinyNN(2 * channels_per_dim, 1, [8, 4, 4, 4], "tanh")
+
+    all_params = model.get_learnable_params()
+    print("PARAM COUNT: ", model.param_count())
+    # raise 1
+
+    opt = nn.optim.Adam(list(all_params), lr=0.005)
     batch_size = 128
 
     @TinyJit
@@ -175,9 +193,9 @@ def train_model():
             opt.zero_grad()
 
             y_pred = model(encoded_x).tanh()
-            assert y_pred.shape == (batch_size, 1)
+            check_shape(y_pred, [(batch_size, 1), dtypes.float32])
             y_actual = target_fn(unencoded_x)
-            assert y_actual.shape == (batch_size, 1)
+            check_shape(y_actual, [(batch_size, 1), dtypes.float32])
 
             loss = (y_pred - y_actual).pow(2).mean()
             loss = loss.backward()
@@ -185,7 +203,7 @@ def train_model():
             return loss
 
     with Tensor.train():
-        for step in range(30000):
+        for step in range(2000):
             x = get_random_unencoded_inputs(batch_size, input_range=input_range)
             encoded_x = encode_inputs(
                 x.numpy(), channels_per_dim=channels_per_dim, input_range=input_range

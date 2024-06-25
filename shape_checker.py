@@ -14,7 +14,7 @@ def check_shape(t: Tensor, shape):
     ), f"Expected shape {shape} for tensor, got {t.shape}"
 
     for a, b in zip(t.shape, shape):
-        if b is None:
+        if b is None or b < 0:
             continue
 
         assert a == b, f"Expected shape {shape} for tensor, got {t.shape}"

@@ -4,18 +4,22 @@ import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
-from tinygrad import Tensor, nn, TinyJit
+from tinygrad import Tensor, nn, TinyJit, dtypes
 from dataclasses import dataclass
 import numpy as np
 from typing import Callable, List
 import matplotlib.pyplot as plt
 
 from b_spline import coef2curve
-from shape_checker import check_shapes
+from shape_checker import check_shapes, check_shape
 
 
 def init(size) -> Tensor:
     return Tensor.uniform(size, low=-0.2, high=0.2)
+
+
+def param_count(t: Tensor) -> int:
+    return int(np.prod(t.shape))
 
 
 class BatchKANCubicLayer:
@@ -40,7 +44,7 @@ class BatchKANCubicLayer:
 
         return y
 
-    def get_learnable_params(self):
+    def get_learnable_params(self) -> List[Tensor]:
         return [
             self.a,
             self.b,
@@ -48,6 +52,9 @@ class BatchKANCubicLayer:
             self.post_weights,
             self.bias,
         ]
+
+    def param_count(self) -> int:
+        return sum(param_count(p) for p in self.get_learnable_params())
 
 
 class BatchKANQuadraticLayer:
@@ -72,13 +79,16 @@ class BatchKANQuadraticLayer:
 
         return y
 
-    def get_learnable_params(self):
+    def get_learnable_params(self) -> List[Tensor]:
         return [
             self.a,
             self.b,
             self.post_weights,
             self.bias,
         ]
+
+    def param_count(self) -> int:
+        return sum(param_count(p) for p in self.get_learnable_params())
 
 
 class BatchKANLinearLayer:
@@ -102,12 +112,15 @@ class BatchKANLinearLayer:
 
         return y
 
-    def get_learnable_params(self):
+    def get_learnable_params(self) -> List[Tensor]:
         return [
             self.a,
             self.bias,
             self.post_weights,
         ]
+
+    def param_count(self) -> int:
+        return sum(param_count(p) for p in self.get_learnable_params())
 
 
 class BatchKANCubicBSplineLayer:
@@ -142,17 +155,18 @@ class BatchKANCubicBSplineLayer:
             Tensor.ones(self.num_splines),
             Tensor(np.linspace(domain[0], domain[1], num_grid_intervals + 1)),
         )
-        assert self.grid.shape == (self.num_splines, num_grid_intervals + 1)
+        check_shape(self.grid, (self.num_splines, num_grid_intervals + 1))
 
-    @check_shapes((None, None))
+    @check_shapes([(None, None), dtypes.float32])
     def __call__(self, x: Tensor, use_sigmoid_trick=True):
+        check_shape(x, (batch_size, self.in_count))
         batch_size = x.shape[0]
         # x is of shape (batch_size, in_count)
-        assert x.shape == (batch_size, self.in_count)
         x = x.unsqueeze(1).expand(-1, self.out_count, -1)
         # x is now of shape (batch_size, out_count, in_count)
         x = x.permute(2, 1, 0).reshape(self.num_splines, batch_size)
-        assert x.shape == (self.num_splines, batch_size)
+        # assert x.shape == (self.num_splines, batch_size)
+        check_shape(x, (self.num_splines, batch_size))
 
         y = coef2curve(
             x,
@@ -183,6 +197,9 @@ class BatchKANCubicBSplineLayer:
         if self.bias is not None:
             params.append(self.bias)
         return params
+
+    def param_count(self) -> int:
+        return sum(param_count(p) for p in self.get_learnable_params())
 
     def plot_response(self, input_range=(-1, 1), resolution=100):
         x = np.linspace(input_range[0], input_range[1], resolution)
@@ -240,6 +257,9 @@ class KAN:
         for layer in self.layers:
             params += layer.get_learnable_params()
         return set(params)
+
+    def param_count(self) -> int:
+        return sum(param_count(p) for p in self.get_learnable_params())
 
     def plot_response(
         self,
@@ -299,7 +319,7 @@ def run_model():
 
     input_range = (-2, 2)
 
-    def generate_input(batch_size) -> float:
+    def generate_input(batch_size: int) -> np.ndarray:
         return np.random.uniform(input_range[0], input_range[1], (batch_size, 1))
 
     batch_size = 32
