@@ -11,6 +11,7 @@ from typing import Callable, List
 import matplotlib.pyplot as plt
 
 from b_spline import coef2curve
+from shape_checker import check_shapes
 
 
 def init(size) -> Tensor:
@@ -23,7 +24,8 @@ class BatchKANCubicLayer:
         self.b = init((out_count, in_count))
         self.c = init((out_count, in_count))
 
-        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+        self.bias = init((out_count,))
+        self.post_weights = init((out_count,))
 
     def __call__(self, x: Tensor):
         # x is of shape (batch_size, in_count)
@@ -33,30 +35,30 @@ class BatchKANCubicLayer:
         y = self.a * x.pow(3) + self.b * x.pow(2) + self.c * x
         y = y.sum(axis=-1)
 
+        y = y * self.post_weights
         y = y + self.bias
 
         return y
 
     def get_learnable_params(self):
-        params = [
+        return [
             self.a,
             self.b,
             self.c,
+            self.post_weights,
             self.bias,
         ]
-        return params
 
 
 class BatchKANQuadraticLayer:
-    def __init__(self, in_count: int, out_count: int, use_tanh=False, **kwargs):
+    def __init__(self, in_count: int, out_count: int, **kwargs):
         self.a = init((out_count, in_count))
         self.b = init((out_count, in_count))
 
-        self.tanh_weights = (
-            Tensor.uniform((out_count,), low=0.4, high=0.6) if use_tanh else None
-        )
         self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+        self.post_weights = Tensor.uniform((out_count,), low=-0.2, high=0.2)
 
+    @check_shapes((None, None))
     def __call__(self, x: Tensor):
         # x is of shape (batch_size, in_count)
         x = x.unsqueeze(1)
@@ -65,30 +67,28 @@ class BatchKANQuadraticLayer:
         y = self.a * x.pow(2) + self.b * x
         y = y.sum(axis=-1)
 
-        if self.tanh_weights is not None:
-            y = (y * self.tanh_weights).tanh() + (1 - self.tanh_weights) * y
+        y = y * self.post_weights
         y = y + self.bias
 
         return y
 
     def get_learnable_params(self):
-        params = [
+        return [
             self.a,
             self.b,
+            self.post_weights,
             self.bias,
         ]
-        if self.tanh_weights is not None:
-            params.append(self.tanh_weights)
-        return params
 
 
 class BatchKANLinearLayer:
     def __init__(self, in_count: int, out_count: int, **kwargs):
         self.a = init((out_count, in_count))
 
-        self.tan_weights = Tensor.uniform((out_count,), low=0.4, high=0.6)
-        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+        self.post_weights = init((out_count,))
+        self.bias = init((out_count,))
 
+    @check_shapes((None, None))
     def __call__(self, x: Tensor):
         # x is of shape (batch_size, in_count)
         x = x.unsqueeze(1)
@@ -97,18 +97,17 @@ class BatchKANLinearLayer:
         y = self.a * x
         y = y.sum(axis=-1)
 
-        y = (y * self.tan_weights).tanh() + (1 - self.tan_weights) * y
+        y = y * self.post_weights
         y = y + self.bias
 
         return y
 
     def get_learnable_params(self):
-        params = [
+        return [
             self.a,
             self.bias,
-            self.tan_weights,
+            self.post_weights,
         ]
-        return params
 
 
 class BatchKANCubicBSplineLayer:
@@ -145,6 +144,7 @@ class BatchKANCubicBSplineLayer:
         )
         assert self.grid.shape == (self.num_splines, num_grid_intervals + 1)
 
+    @check_shapes((None, None))
     def __call__(self, x: Tensor, use_sigmoid_trick=True):
         batch_size = x.shape[0]
         # x is of shape (batch_size, in_count)
@@ -229,6 +229,7 @@ class KAN:
             )
         self.layers.append(Layer(hidden_layer_defs[-1].out_count, out_count))
 
+    @check_shapes((None, None))
     def __call__(self, x: Tensor):
         for layer in self.layers:
             x = layer(x)
@@ -282,7 +283,6 @@ def run_model():
         1,
         [HiddenLayerDef(4)],
         Layer=BatchKANQuadraticLayer,
-        layer_params={"use_tanh": False},
     )
 
     all_params = model.get_learnable_params()
@@ -305,6 +305,7 @@ def run_model():
     batch_size = 32
 
     @TinyJit
+    @check_shapes((batch_size, 1))
     def train_step(x: Tensor) -> Tensor:
         with Tensor.train():
             opt.zero_grad()
