@@ -2,10 +2,17 @@ import sys
 import os
 import numpy as np
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
 
 from tinygrad import Tensor, nn, TinyJit, dtypes
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
+from image_parameterization.fourier_encoding import encode_inputs
+from image_parameterization.load_image import load_image
+from image_parameterization.plotting import plot_target_fn
+
 
 from tiny_kan import (
     KAN,
@@ -18,42 +25,9 @@ from shape_checker import check_shapes, check_shape
 from tiny_nn import TinyNN
 
 
-def encode_coord(
-    x: float, y: float, channels_per_dim=4, input_range=(-1, 1)
-) -> np.ndarray:
-    """
-    Uses Fourier feature encoding to expand a 2D coordinate into multiple channels
-    to make it easier for models to learn high-frequency patterns.
-    """
-
-    x = (x - input_range[0]) / (input_range[1] - input_range[0]) * 2 * np.pi
-    y = (y - input_range[0]) / (input_range[1] - input_range[0]) * 2 * np.pi
-
-    channels = []
-    for coord in [x, y]:
-        channels.append(coord)
-        for i in range(channels_per_dim - 1):
-            channels.append(np.sin((2**i) * coord))
-
-    return np.array(channels, dtype=np.float32)
-
-
 @check_shapes(ret=[(None, 2), dtypes.float32])
 def get_random_unencoded_inputs(batch_size=1, input_range=(-1, 1)) -> Tensor:
     return Tensor.uniform((batch_size, 2), low=input_range[0], high=input_range[1])
-
-
-def encode_inputs(
-    coords: np.ndarray, channels_per_dim=4, input_range=(-1, 1)
-) -> np.ndarray:
-    if channels_per_dim < 2:
-        return coords
-
-    inputs = [
-        encode_coord(x, y, channels_per_dim=channels_per_dim, input_range=input_range)
-        for x, y in coords
-    ]
-    return np.array(inputs, dtype=np.float32)
 
 
 @check_shapes([(None, 2), dtypes.float32], ret=[(None, 1), dtypes.float32])
@@ -112,27 +86,20 @@ def stitches(coords: Tensor) -> Tensor:
     return out.unsqueeze(1).where(1.0, -1.0)
 
 
-target_fn = stitches
+img_tensor = load_image("/Users/casey/Downloads/smaller.png")
 
 
-def plot_target_fn(resolution=100, input_range=(-1, 1), output_range=(-1, 1)):
-    import matplotlib.pyplot as plt
+@check_shapes([(None, 2), dtypes.float32], ret=[(None, 1), dtypes.float32])
+def real_image_test(coords: Tensor) -> Tensor:
+    # convert from [-1, 1] to [0, img_tensor.shape[0] - 1]
+    coords = (coords + 1) / 2 * (img_tensor.shape[0] - 1)
 
-    x = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
-    y = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
-    X, Y = np.meshgrid(x, y)
-    coords = np.stack([X.ravel(), Y.ravel()], axis=1)
-    coords = Tensor(coords)
-    check_shape(coords, [(resolution**2, 2), dtypes.float32])
-    Z = target_fn(coords).reshape(X.shape)
-    check_shape(Z, [(resolution, resolution), dtypes.float32])
-    Z = Z.numpy()
+    return img_tensor[
+        coords[:, 1].cast(dtypes.int32), coords[:, 0].cast(dtypes.int32)
+    ].unsqueeze(1)
 
-    plt.contourf(
-        X, Y, Z, levels=2, cmap="coolwarm", vmin=output_range[0], vmax=output_range[1]
-    )
-    plt.colorbar()
-    plt.show()
+
+target_fn = real_image_test
 
 
 def plot_model_response(
@@ -149,7 +116,7 @@ def plot_model_response(
     X, Y = np.meshgrid(x, y)
     coords = np.stack([X.ravel(), Y.ravel()], axis=1)
     coords = encode_inputs(coords, channels_per_dim=channels_per_dim)
-    Z = model(Tensor(coords)).reshape(X.shape).tanh().numpy()
+    Z = model(Tensor(coords)).reshape(X.shape).numpy()
 
     plt.contourf(
         X, Y, Z, levels=2, cmap="coolwarm", vmin=output_range[0], vmax=output_range[1]
@@ -161,26 +128,40 @@ def plot_model_response(
 def train_model():
     channels_per_dim = 6
     input_range = (-1, 1)
+    # \/ worked for the stitches example; KAN seemed to have a small advantage
+    # to the NN when comparing by param count, but it's possible that different
+    # architectures or hyperparams would have changed that
+    # model = KAN(
+    #     2 * channels_per_dim,
+    #     1,
+    #     [
+    #         HiddenLayerDef(6),
+    #         HiddenLayerDef(2),
+    #     ],
+    #     Layer=BatchKANQuadraticLayer,
+    #     post_activation_fn="tanh",
+    # )
+
+    # model = TinyNN(2 * channels_per_dim, 1, [4, 4, 4, 4, 4], "tanh")
+
     model = KAN(
         2 * channels_per_dim,
         1,
         [
-            HiddenLayerDef(4),
-            HiddenLayerDef(4),
-            HiddenLayerDef(2),
-            HiddenLayerDef(2),
+            HiddenLayerDef(64),
+            HiddenLayerDef(32),
+            HiddenLayerDef(32),
+            HiddenLayerDef(16),
         ],
         Layer=BatchKANQuadraticLayer,
     )
-
-    # model = TinyNN(2 * channels_per_dim, 1, [8, 4, 4, 4], "tanh")
 
     all_params = model.get_learnable_params()
     print("PARAM COUNT: ", model.param_count())
     # raise 1
 
     opt = nn.optim.Adam(list(all_params), lr=0.005)
-    batch_size = 128
+    batch_size = 512
 
     @TinyJit
     @check_shapes(
@@ -192,7 +173,7 @@ def train_model():
         with Tensor.train():
             opt.zero_grad()
 
-            y_pred = model(encoded_x).tanh()
+            y_pred = model(encoded_x)
             check_shape(y_pred, [(batch_size, 1), dtypes.float32])
             y_actual = target_fn(unencoded_x)
             check_shape(y_actual, [(batch_size, 1), dtypes.float32])
@@ -203,7 +184,7 @@ def train_model():
             return loss
 
     with Tensor.train():
-        for step in range(2000):
+        for step in range(20000):
             x = get_random_unencoded_inputs(batch_size, input_range=input_range)
             encoded_x = encode_inputs(
                 x.numpy(), channels_per_dim=channels_per_dim, input_range=input_range

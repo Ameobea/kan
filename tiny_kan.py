@@ -1,13 +1,15 @@
 import sys
 import os
 
+from util import build_activation, param_count
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
 from tinygrad import Tensor, nn, TinyJit, dtypes
 from dataclasses import dataclass
 import numpy as np
-from typing import Callable, List
+from typing import Callable, List, Optional
 import matplotlib.pyplot as plt
 
 from b_spline import coef2curve
@@ -16,10 +18,6 @@ from shape_checker import check_shapes, check_shape
 
 def init(size) -> Tensor:
     return Tensor.uniform(size, low=-0.2, high=0.2)
-
-
-def param_count(t: Tensor) -> int:
-    return int(np.prod(t.shape))
 
 
 class BatchKANCubicLayer:
@@ -230,6 +228,7 @@ class KAN:
         hidden_layer_defs: List[HiddenLayerDef],
         Layer=BatchKANCubicLayer,
         layer_params: dict = {},
+        post_activation_fn: Optional[str] = None,
     ):
         if len(hidden_layer_defs) == 0:
             self.layers = [Layer(in_count, out_count, **layer_params)]
@@ -246,10 +245,14 @@ class KAN:
             )
         self.layers.append(Layer(hidden_layer_defs[-1].out_count, out_count))
 
+        self.post_activation_fn = build_activation(post_activation_fn)
+
     @check_shapes((None, None))
     def __call__(self, x: Tensor):
         for layer in self.layers:
             x = layer(x)
+
+        x = self.post_activation_fn(x)
         return x
 
     def get_learnable_params(self):

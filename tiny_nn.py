@@ -4,20 +4,7 @@ import numpy as np
 from tinygrad import Tensor, nn, dtypes
 
 from shape_checker import check_shapes
-
-
-def param_count(t: Tensor) -> int:
-    return int(np.prod(t.shape))
-
-
-def build_activation(activation_fn: str) -> Callable[[Tensor], Tensor]:
-    if activation_fn == "tanh":
-        return lambda x: x.tanh()
-    if activation_fn == "relu":
-        return lambda x: x.relu()
-    if activation_fn == "sigmoid":
-        return lambda x: x.sigmoid()
-    raise ValueError(f"Unknown activation function: {activation_fn}")
+from util import build_activation, param_count
 
 
 class TinyNN:
