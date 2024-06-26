@@ -2,7 +2,7 @@ import sys
 import os
 import numpy as np
 
-
+import matplotlib.pyplot as plt
 from tinygrad import Tensor, nn, TinyJit, dtypes
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -109,8 +109,6 @@ def plot_model_response(
     output_range=(-1, 1),
     resolution=100,
 ):
-    import matplotlib.pyplot as plt
-
     x = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     y = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     X, Y = np.meshgrid(x, y)

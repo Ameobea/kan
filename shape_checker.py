@@ -2,9 +2,10 @@ import functools
 import inspect
 
 from tinygrad import Tensor, dtypes
+import numpy as np
 
 
-def check_shape(t: Tensor, shape):
+def check_shape(t: Tensor | np.ndarray, shape):
     dtype = None
     if isinstance(shape, list):
         shape, dtype = shape

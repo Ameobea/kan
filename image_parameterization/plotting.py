@@ -1,6 +1,8 @@
 from typing import Callable
+
 import numpy as np
 from tinygrad import Tensor, dtypes
+import matplotlib.pyplot as plt
 
 from shape_checker import check_shape
 
@@ -11,8 +13,6 @@ def plot_target_fn(
     input_range=(-1, 1),
     output_range=(-1, 1),
 ):
-    import matplotlib.pyplot as plt
-
     x = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     y = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
     X, Y = np.meshgrid(x, y)

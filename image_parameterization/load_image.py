@@ -59,6 +59,43 @@ def get_pixel_value(
     return pixel_value
 
 
+def get_pixel_value_np(
+    img_data: np.ndarray,
+    x: float,
+    y: float,
+    interpolation="nearest",
+) -> float:
+    height, width = img_data.shape
+    x_idx = (x + 1) / 2 * (width - 1)
+    y_idx = (y + 1) / 2 * (height - 1)
+
+    if interpolation == "nearest":
+        x_idx = int(round(x_idx))
+        y_idx = int(round(y_idx))
+        pixel_value = img_data[y_idx, x_idx]
+    elif interpolation == "bilinear":
+        x0 = int(np.floor(x_idx))
+        x1 = min(x0 + 1, width - 1)
+        y0 = int(np.floor(y_idx))
+        y1 = min(y0 + 1, height - 1)
+
+        wa = (x1 - x_idx) * (y1 - y_idx)
+        wb = (x_idx - x0) * (y1 - y_idx)
+        wc = (x1 - x_idx) * (y_idx - y0)
+        wd = (x_idx - x0) * (y_idx - y0)
+
+        pixel_value = (
+            wa * img_data[y0, x0]
+            + wb * img_data[y0, x1]
+            + wc * img_data[y1, x0]
+            + wd * img_data[y1, x1]
+        )
+    else:
+        raise ValueError(f"Unsupported interpolation type: {interpolation}")
+
+    return pixel_value
+
+
 @check_shapes(
     [(None, None), dtypes.float32],
     [(2,), dtypes.float32],

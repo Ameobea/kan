@@ -22,10 +22,13 @@ def encode_coords(
 
 
 def encode_coord(x: float, channels_per_dim=4, input_range=(-1, 1)) -> np.ndarray:
+    if channels_per_dim < 2:
+        return x
+
     x = (x - input_range[0]) / (input_range[1] - input_range[0]) * 2 * np.pi
 
-    channels = []
-    for i in range(channels_per_dim):
+    channels = [x]
+    for i in range(channels_per_dim - 1):
         channels.append(np.sin((2**i) * x))
 
     return np.array(channels, dtype=np.float32)
