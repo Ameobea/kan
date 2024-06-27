@@ -54,6 +54,9 @@ def check_shapes(*dec_args, **dec_kwargs):
 
             arg_ix = 0
             for arg in args:
+                if arg_ix >= dec_arg_count:
+                    break
+
                 if not isinstance(arg, Tensor) and not isinstance(arg, np.ndarray):
                     continue
 

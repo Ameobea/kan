@@ -17,11 +17,14 @@ from shape_checker import check_shapes, check_shape
 
 
 def init(size) -> Tensor:
-    return Tensor.uniform(size, low=-0.2, high=0.2)
+    return Tensor.uniform(size, low=-0.2, high=0.2, dtype=dtypes.float32)
 
 
 class BatchKANCubicLayer:
     def __init__(self, in_count: int, out_count: int, **kwargs):
+        self.in_count = in_count
+        self.out_count = out_count
+
         self.a = init((out_count, in_count))
         self.b = init((out_count, in_count))
         self.c = init((out_count, in_count))
@@ -30,9 +33,9 @@ class BatchKANCubicLayer:
         self.post_weights = init((out_count,))
 
     def __call__(self, x: Tensor):
-        # x is of shape (batch_size, in_count)
+        check_shape(x, [(None, self.in_count), dtypes.float32])
         x = x.unsqueeze(1)
-        # x is now of shape (batch_size, 1, in_count)
+        check_shape(x, [(None, 1, self.in_count), dtypes.float32])
 
         y = self.a * x.pow(3) + self.b * x.pow(2) + self.c * x
         y = y.sum(axis=-1)
@@ -57,17 +60,19 @@ class BatchKANCubicLayer:
 
 class BatchKANQuadraticLayer:
     def __init__(self, in_count: int, out_count: int, **kwargs):
+        self.in_count = in_count
+        self.out_count = out_count
+
         self.a = init((out_count, in_count))
         self.b = init((out_count, in_count))
 
-        self.bias = Tensor.uniform((out_count,), low=-0.2, high=0.2)
-        self.post_weights = Tensor.uniform((out_count,), low=-0.2, high=0.2)
+        self.bias = init((out_count,))
+        self.post_weights = init((out_count,))
 
-    @check_shapes((None, None))
+    @check_shapes(ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor):
-        # x is of shape (batch_size, in_count)
+        check_shape(x, [(None, self.in_count), dtypes.float32])
         x = x.unsqueeze(1)
-        # x is now of shape (batch_size, 1, in_count)
 
         y = self.a * x.pow(2) + self.b * x
         y = y.sum(axis=-1)
@@ -83,38 +88,6 @@ class BatchKANQuadraticLayer:
             self.b,
             self.post_weights,
             self.bias,
-        ]
-
-    def param_count(self) -> int:
-        return sum(param_count(p) for p in self.get_learnable_params())
-
-
-class BatchKANLinearLayer:
-    def __init__(self, in_count: int, out_count: int, **kwargs):
-        self.a = init((out_count, in_count))
-
-        self.post_weights = init((out_count,))
-        self.bias = init((out_count,))
-
-    @check_shapes((None, None))
-    def __call__(self, x: Tensor):
-        # x is of shape (batch_size, in_count)
-        x = x.unsqueeze(1)
-        # x is now of shape (batch_size, 1, in_count)
-
-        y = self.a * x
-        y = y.sum(axis=-1)
-
-        y = y * self.post_weights
-        y = y + self.bias
-
-        return y
-
-    def get_learnable_params(self) -> List[Tensor]:
-        return [
-            self.a,
-            self.bias,
-            self.post_weights,
         ]
 
     def param_count(self) -> int:
@@ -155,16 +128,15 @@ class BatchKANCubicBSplineLayer:
         )
         check_shape(self.grid, (self.num_splines, num_grid_intervals + 1))
 
-    @check_shapes([(None, None), dtypes.float32])
+    @check_shapes(ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor, use_sigmoid_trick=True):
         check_shape(x, (batch_size, self.in_count))
         batch_size = x.shape[0]
-        # x is of shape (batch_size, in_count)
+        check_shape(x, [(batch_size, self.in_count), dtypes.float32])
         x = x.unsqueeze(1).expand(-1, self.out_count, -1)
-        # x is now of shape (batch_size, out_count, in_count)
+        check_shape(x, [(batch_size, self.out_count, self.in_count), dtypes.float32])
         x = x.permute(2, 1, 0).reshape(self.num_splines, batch_size)
-        # assert x.shape == (self.num_splines, batch_size)
-        check_shape(x, (self.num_splines, batch_size))
+        check_shape(x, [(self.num_splines, batch_size), dtypes.float32])
 
         y = coef2curve(
             x,
@@ -173,17 +145,13 @@ class BatchKANCubicBSplineLayer:
             self.order,
             use_sigmoid_trick=use_sigmoid_trick,
         )
-        # y is of shape (num_splines, batch_size)
-        assert y.shape == (self.num_splines, batch_size)
+        check_shape(y, [(self.num_splines, batch_size), dtypes.float32])
         y = y.permute(1, 0)
-        # y is now of shape (batch_size, num_splines)
-        assert y.shape == (batch_size, self.num_splines)
+        check_shape(y, [(batch_size, self.num_splines), dtypes.float32])
         y = y.reshape(batch_size, self.in_count, self.out_count)
-        # y is now of shape (batch_size, out_count, in_count)
-        assert y.shape == (batch_size, self.in_count, self.out_count)
+        check_shape(y, [(batch_size, self.in_count, self.out_count), dtypes.float32])
         y = y.sum(axis=1)
-        # y is now of shape (batch_size, out_count)
-        assert y.shape == (batch_size, self.out_count)
+        check_shape(y, [(batch_size, self.out_count), dtypes.float32])
 
         if self.bias is not None:
             y = y + self.bias
@@ -328,7 +296,7 @@ def run_model():
     batch_size = 32
 
     @TinyJit
-    @check_shapes((batch_size, 1))
+    @check_shapes([(batch_size, 1), dtypes.float32], ret=[(), dtypes.float32])
     def train_step(x: Tensor) -> Tensor:
         with Tensor.train():
             opt.zero_grad()

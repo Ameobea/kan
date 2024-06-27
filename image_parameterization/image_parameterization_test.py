@@ -14,13 +14,7 @@ from image_parameterization.load_image import load_image
 from image_parameterization.plotting import plot_target_fn
 
 
-from tiny_kan import (
-    KAN,
-    BatchKANQuadraticLayer,
-    BatchKANCubicLayer,
-    BatchKANLinearLayer,
-    HiddenLayerDef,
-)
+from tiny_kan import KAN, BatchKANQuadraticLayer, BatchKANCubicLayer, HiddenLayerDef
 from shape_checker import check_shapes, check_shape
 from tiny_nn import TinyNN
 

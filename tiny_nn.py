@@ -14,6 +14,7 @@ class TinyNN:
         out_count: int,
         hidden_layer_sizes: List[int],
         activation_fn="tanh",
+        post_activation_fn="tanh",
     ):
         if len(hidden_layer_sizes) == 0:
             self.layers = [nn.Linear(in_count, out_count)]
@@ -27,12 +28,16 @@ class TinyNN:
         self.layers.append(nn.Linear(hidden_layer_sizes[-1], out_count))
 
         self.activation_fn = build_activation(activation_fn)
+        self.post_activation_fn = build_activation(post_activation_fn)
 
     @check_shapes([(None, None), dtypes.float32], ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor) -> Tensor:
-        for layer in self.layers:
+        for layer in self.layers[:-1]:
             x = layer(x)
             x = self.activation_fn(x)
+
+        x = self.layers[-1](x)
+        x = build_activation(self.post_activation_fn)(x)
 
         return x
 

@@ -65,9 +65,6 @@ def encode_slice_ix(
     return encode_coord(slice_ix, channels_per_dim=channels_per_dim)
 
 
-# rng = np.random.default_rng(0)
-
-
 # @check_shapes(ret=[(None, None), dtypes.float32])
 @njit("float32[:](int32, int32, float32, float32, int32, int32)")
 def encode_input(
@@ -121,7 +118,7 @@ def build_training_inputs(
         slice_ix = slice_indices[i]
         img_slice = training_data[slice_ix]
         expected_y = get_pixel_value_np(img_slice, x, y, interpolation="bilinear")
-        expected_ys[i] = float(expected_y)
+        expected_ys[i] = expected_y
 
     return encoded_inputs, expected_ys
 
@@ -209,12 +206,11 @@ if __name__ == "__main__":
         input_size,
         1,
         [
-            # HiddenLayerDef(1024),
-            HiddenLayerDef(512),
-            # HiddenLayerDef(256),
-            # HiddenLayerDef(256),
             HiddenLayerDef(256),
             HiddenLayerDef(128),
+            HiddenLayerDef(64),
+            HiddenLayerDef(32),
+            HiddenLayerDef(16),
         ],
         Layer=BatchKANQuadraticLayer,
         post_activation_fn="tanh",
