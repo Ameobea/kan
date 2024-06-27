@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 import os
 import sys
 
@@ -13,6 +13,7 @@ sys.path.append(parent_dir)
 
 from image_parameterization.load_image import get_pixel_value_np, load_image
 from image_parameterization.fourier_encoding import encode_coord, encode_coords
+from image_parameterization.image_embedding import embed_images
 from shape_checker import check_shape, check_shapes
 from tiny_kan import (
     KAN,
@@ -72,10 +73,11 @@ def encode_slice_ix(
 
 
 # @check_shapes(ret=[(None, None), dtypes.float32])
-@njit("float32[:](int32, int32, float32, float32, int32, int32)")
+@njit("float32[:](int32, float32, float32[:,:], float32, float32, int32, int32)")
 def encode_input(
     slice_count: int,
     slice_ix: int,
+    embedding: np.ndarray,
     x: float,
     y: float,
     slice_ix_channels_per_dim: int = 3,
@@ -84,9 +86,17 @@ def encode_input(
     encoded = np.zeros(
         (slice_ix_channels_per_dim + coords_channels_per_dim * 2,), dtype=np.float32
     )
-    encoded[:slice_ix_channels_per_dim] = encode_slice_ix(
-        slice_ix, slice_count, channels_per_dim=slice_ix_channels_per_dim
-    )
+    if embedding.shape[0] > 0:
+        # linear interpolation between embeddings
+        slice_ix = min(slice_ix, embedding.shape[0] - 2)
+        slice_ix_frac = slice_ix % 1
+        encoded[:slice_ix_channels_per_dim] = (1 - slice_ix_frac) * embedding[
+            int(slice_ix)
+        ] + slice_ix_frac * embedding[int(slice_ix) + 1]
+    else:
+        encoded[:slice_ix_channels_per_dim] = encode_slice_ix(
+            slice_ix, slice_count, channels_per_dim=slice_ix_channels_per_dim
+        )
     encoded[slice_ix_channels_per_dim:] = encode_coords(
         x, y, channels_per_dim=coords_channels_per_dim
     )
@@ -100,6 +110,7 @@ def encode_input(
 def build_training_inputs(
     training_data: List[np.ndarray],
     batch_size: int,
+    embedding: Optional[np.ndarray],
     slice_ix_channels_per_dim: int = 3,
     coords_channels_per_dim: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -115,6 +126,7 @@ def build_training_inputs(
         encoded = encode_input(
             len(training_data),
             slice_indices[i],
+            np.zeros((0, 0), dtype=np.float32) if embedding is None else embedding,
             x,
             y,
             slice_ix_channels_per_dim=slice_ix_channels_per_dim,
@@ -140,6 +152,7 @@ def plot_model_response(
     ax,
     slice_count: int,
     slice_ix: int,
+    embedding: Optional[np.ndarray],
     model: KAN,
     slice_ix_channels_per_dim: int = 3,
     coords_channels_per_dim: int = 4,
@@ -153,6 +166,7 @@ def plot_model_response(
             model_input = encode_input(
                 slice_count,
                 slice_ix,
+                np.zeros((0, 0), dtype=np.float32) if embedding is None else embedding,
                 x_coord,
                 y_coord,
                 slice_ix_channels_per_dim,
@@ -180,6 +194,7 @@ def plot_expected_vs_actual_for_slice(
     training_data: List[np.ndarray],
     slice_count: int,
     slice_ix: int,
+    embedding: Optional[np.ndarray],
     model: KAN,
     slice_ix_channels_per_dim: int,
     coord_channels_per_dim: int,
@@ -193,6 +208,7 @@ def plot_expected_vs_actual_for_slice(
         axs[1],
         slice_count,
         slice_ix,
+        embedding,
         model,
         resolution=resolution,
         slice_ix_channels_per_dim=slice_ix_channels_per_dim,
@@ -207,15 +223,20 @@ if __name__ == "__main__":
     training_data = load_training_data(slice_count=slice_count)
 
     slice_ix_channels_per_dim = 3
+    # embedding = embed_images(training_data, n_dims=slice_ix_channels_per_dim)
+    embedding = None
+
     coord_channels_per_dim = 8
     input_size = slice_ix_channels_per_dim + coord_channels_per_dim * 2
     model = KAN(
         input_size,
         1,
         [
-            HiddenLayerDef(256),
+            # HiddenLayerDef(256),
             HiddenLayerDef(128),
             HiddenLayerDef(64),
+            # HiddenLayerDef(48),
+            HiddenLayerDef(48),
             HiddenLayerDef(32),
             # HiddenLayerDef(16),
         ],
@@ -226,6 +247,20 @@ if __name__ == "__main__":
         post_activation_fn=None,
     )
 
+    # model = KAN(
+    #     input_size,
+    #     1,
+    #     [
+    #         HiddenLayerDef(226),
+    #         # HiddenLayerDef(128),
+    #         HiddenLayerDef(90),
+    #         HiddenLayerDef(60),
+    #         HiddenLayerDef(30),
+    #     ],
+    #     Layer=NNLayer,
+    #     post_activation_fn=None,
+    # )
+
     # model = TinyNN(
     #     input_size, 1, [400, 180, 80, 40], activation_fn="tanh", post_activation_fn=None
     # )
@@ -235,7 +270,7 @@ if __name__ == "__main__":
     # raise 1
 
     opt = nn.optim.Adam(list(all_params), lr=0.005)
-    batch_size = 1024 * 1
+    batch_size = 1024 * 2
 
     @TinyJit
     @check_shapes(
@@ -260,6 +295,7 @@ if __name__ == "__main__":
             encoded_x, expected_y = build_training_inputs(
                 training_data,
                 batch_size,
+                embedding=embedding,
                 slice_ix_channels_per_dim=slice_ix_channels_per_dim,
                 coords_channels_per_dim=coord_channels_per_dim,
             )
@@ -271,6 +307,7 @@ if __name__ == "__main__":
         training_data,
         slice_count,
         0,
+        embedding,
         model,
         slice_ix_channels_per_dim,
         coord_channels_per_dim,
@@ -280,6 +317,7 @@ if __name__ == "__main__":
         training_data,
         slice_count,
         1,
+        embedding,
         model,
         slice_ix_channels_per_dim,
         coord_channels_per_dim,
@@ -291,6 +329,7 @@ if __name__ == "__main__":
         ax,
         slice_count,
         0.5,
+        embedding,
         model,
         resolution=100,
         slice_ix_channels_per_dim=slice_ix_channels_per_dim,
