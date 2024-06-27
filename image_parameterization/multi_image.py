@@ -14,7 +14,13 @@ sys.path.append(parent_dir)
 from image_parameterization.load_image import get_pixel_value_np, load_image
 from image_parameterization.fourier_encoding import encode_coord, encode_coords
 from shape_checker import check_shape, check_shapes
-from tiny_kan import KAN, BatchKANQuadraticLayer, HiddenLayerDef
+from tiny_kan import (
+    KAN,
+    BatchKANQuadraticLayer,
+    HiddenLayerDef,
+    BatchKANCubicBSplineLayer,
+    NNLayer,
+)
 from tiny_nn import TinyNN
 
 # set numpy rng seed for reproducibility
@@ -84,6 +90,8 @@ def encode_input(
     encoded[slice_ix_channels_per_dim:] = encode_coords(
         x, y, channels_per_dim=coords_channels_per_dim
     )
+    # TODO: TEMP WHILE TESTING KAN SPLINE LAYER DOMAIN
+    # encoded *= 2
     return encoded
 
 
@@ -99,7 +107,6 @@ def build_training_inputs(
     encoded_inputs = np.zeros((batch_size, input_size), dtype=np.float32)
     expected_ys = np.zeros((batch_size, 1), dtype=np.float32)
 
-    # slice_indices = rng.integers(0, len(training_data), size=batch_size)
     slice_indices = np.random.randint(0, len(training_data), size=batch_size)
 
     for i in range(batch_size):
@@ -210,20 +217,25 @@ if __name__ == "__main__":
             HiddenLayerDef(128),
             HiddenLayerDef(64),
             HiddenLayerDef(32),
-            HiddenLayerDef(16),
+            # HiddenLayerDef(16),
         ],
+        # FirstLayer=NNLayer,
+        # Layer=NNLayer,
+        FirstLayer=BatchKANQuadraticLayer,
         Layer=BatchKANQuadraticLayer,
-        post_activation_fn="tanh",
+        post_activation_fn=None,
     )
 
-    # model = TinyNN(input_size, 1, [1024, 512, 512, 512, 512], activation_fn="tanh")
+    # model = TinyNN(
+    #     input_size, 1, [400, 180, 80, 40], activation_fn="tanh", post_activation_fn=None
+    # )
 
     all_params = model.get_learnable_params()
     print("PARAM COUNT: ", model.param_count())
     # raise 1
 
     opt = nn.optim.Adam(list(all_params), lr=0.005)
-    batch_size = 1024
+    batch_size = 1024 * 1
 
     @TinyJit
     @check_shapes(
@@ -244,7 +256,7 @@ if __name__ == "__main__":
             return loss
 
     with Tensor.train():
-        for step in range(20000):
+        for step in range(20_000):
             encoded_x, expected_y = build_training_inputs(
                 training_data,
                 batch_size,

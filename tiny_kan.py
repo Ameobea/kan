@@ -16,8 +16,8 @@ from b_spline import coef2curve
 from shape_checker import check_shapes, check_shape
 
 
-def init(size) -> Tensor:
-    return Tensor.uniform(size, low=-0.2, high=0.2, dtype=dtypes.float32)
+def init(shape) -> Tensor:
+    return Tensor.uniform(shape, low=-0.2, high=0.2, dtype=dtypes.float32)
 
 
 class BatchKANCubicLayer:
@@ -59,7 +59,14 @@ class BatchKANCubicLayer:
 
 
 class BatchKANQuadraticLayer:
-    def __init__(self, in_count: int, out_count: int, **kwargs):
+    def __init__(
+        self,
+        in_count: int,
+        out_count: int,
+        use_tanh=True,
+        use_tanh_weights=False,
+        **kwargs,
+    ):
         self.in_count = in_count
         self.out_count = out_count
 
@@ -68,6 +75,8 @@ class BatchKANQuadraticLayer:
 
         self.bias = init((out_count,))
         self.post_weights = init((out_count,))
+        self.tanh_weights = init((out_count,)) if use_tanh_weights else None
+        self.use_tanh = use_tanh
 
     @check_shapes(ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor):
@@ -79,16 +88,23 @@ class BatchKANQuadraticLayer:
 
         y = y * self.post_weights
         y = y + self.bias
+        if self.tanh_weights is not None:
+            y = self.tanh_weights * y.tanh() + (1 - self.tanh_weights) * y
+        elif self.use_tanh:
+            y = y.tanh()
 
         return y
 
     def get_learnable_params(self) -> List[Tensor]:
-        return [
+        params = [
             self.a,
             self.b,
             self.post_weights,
             self.bias,
         ]
+        if self.tanh_weights is not None:
+            params.append(self.tanh_weights)
+        return params
 
     def param_count(self) -> int:
         return sum(param_count(p) for p in self.get_learnable_params())
@@ -99,9 +115,11 @@ class BatchKANCubicBSplineLayer:
         self,
         in_count: int,
         out_count: int,
-        num_knots: int = 2,
+        num_knots: int = 4,
         spline_order: int = 3,
+        use_post_weights=True,
         use_bias=True,
+        use_skip_conn_weights=False,
     ):
         self.in_count = in_count
         self.out_count = out_count
@@ -110,49 +128,56 @@ class BatchKANCubicBSplineLayer:
         self.num_splines = in_count * out_count
         num_grid_intervals = num_knots - 1
 
-        self.coefficients = Tensor.uniform(
-            (self.num_splines, num_grid_intervals + spline_order),
-            low=-0.2,
-            high=0.2,
-        )
+        self.coefficients = init((self.num_splines, num_grid_intervals + spline_order))
 
-        self.bias = (
-            Tensor.uniform((out_count,), low=-0.2, high=0.2) if use_bias else None
+        self.skip_conn_weights = (
+            init((self.num_splines,)) if use_skip_conn_weights else None
         )
+        self.post_weights = init((out_count,)) if use_post_weights else None
+        self.bias = init((out_count,)) if use_bias else None
 
         domain = (-1, 1)
         self.grid = Tensor.einsum(
             "i,j->ij",
-            Tensor.ones(self.num_splines),
-            Tensor(np.linspace(domain[0], domain[1], num_grid_intervals + 1)),
+            Tensor.ones(self.num_splines, dtype=dtypes.float32),
+            Tensor(
+                np.linspace(domain[0], domain[1], num_grid_intervals + 1),
+                dtype=dtypes.float32,
+            ),
         )
-        check_shape(self.grid, (self.num_splines, num_grid_intervals + 1))
+        check_shape(
+            self.grid, [(self.num_splines, num_grid_intervals + 1), dtypes.float32]
+        )
 
     @check_shapes(ret=[(None, None), dtypes.float32])
-    def __call__(self, x: Tensor, use_sigmoid_trick=True):
-        check_shape(x, (batch_size, self.in_count))
+    def __call__(self, x: Tensor):
         batch_size = x.shape[0]
         check_shape(x, [(batch_size, self.in_count), dtypes.float32])
         x = x.unsqueeze(1).expand(-1, self.out_count, -1)
         check_shape(x, [(batch_size, self.out_count, self.in_count), dtypes.float32])
-        x = x.permute(2, 1, 0).reshape(self.num_splines, batch_size)
-        check_shape(x, [(self.num_splines, batch_size), dtypes.float32])
+        coef_x = x.permute(2, 1, 0).reshape(self.num_splines, batch_size)
+        check_shape(coef_x, [(self.num_splines, batch_size), dtypes.float32])
 
-        y = coef2curve(
-            x,
-            self.grid,
-            self.coefficients,
-            self.order,
-            use_sigmoid_trick=use_sigmoid_trick,
-        )
+        y = coef2curve(coef_x, self.grid, self.coefficients, self.order)
         check_shape(y, [(self.num_splines, batch_size), dtypes.float32])
         y = y.permute(1, 0)
         check_shape(y, [(batch_size, self.num_splines), dtypes.float32])
+
+        if self.skip_conn_weights is not None:
+            y = (
+                y
+                + (x.reshape(batch_size, self.num_splines) * self.skip_conn_weights)
+                .contiguous()
+                .gelu()
+            )
+
         y = y.reshape(batch_size, self.in_count, self.out_count)
         check_shape(y, [(batch_size, self.in_count, self.out_count), dtypes.float32])
         y = y.sum(axis=1)
         check_shape(y, [(batch_size, self.out_count), dtypes.float32])
 
+        if self.post_weights is not None:
+            y = y * self.post_weights
         if self.bias is not None:
             y = y + self.bias
 
@@ -160,6 +185,10 @@ class BatchKANCubicBSplineLayer:
 
     def get_learnable_params(self):
         params = [self.coefficients]
+        if self.skip_conn_weights is not None:
+            params.append(self.skip_conn_weights)
+        if self.post_weights is not None:
+            params.append(self.post_weights)
         if self.bias is not None:
             params.append(self.bias)
         return params
@@ -168,19 +197,37 @@ class BatchKANCubicBSplineLayer:
         return sum(param_count(p) for p in self.get_learnable_params())
 
     def plot_response(self, input_range=(-1, 1), resolution=100):
-        x = np.linspace(input_range[0], input_range[1], resolution)
+        x = np.linspace(input_range[0], input_range[1], resolution, dtype=np.float32)
         x = Tensor(x).unsqueeze(1)
         x = x.expand(resolution, self.in_count)
 
-        y_pred_sigmoid_trick = self(x, use_sigmoid_trick=True).numpy()
-        y_pred_no_trick = self(x, use_sigmoid_trick=False).numpy()
+        y_pred = self(x).numpy()
 
         for i in range(self.out_count):
-            plt.plot(x.numpy(), y_pred_sigmoid_trick[:, i], label=f"sigmoid_trick_{i}")
-            plt.plot(x.numpy(), y_pred_no_trick[:, i], label=f"no_trick_{i}")
+            plt.plot(x.numpy(), y_pred[:, i], label=f"y{i}")
 
         plt.legend()
         plt.show()
+
+
+class NNLayer:
+    """
+    Traditional linear/dense layer from normal neural networks
+    """
+
+    def __init__(self, in_count: int, out_count: int, activation_fn="tanh", **kwargs):
+        self.in_count = in_count
+        self.out_count = out_count
+
+        self.linear = nn.Linear(in_count, out_count)
+        self.activation_fn = build_activation(activation_fn)
+
+    @check_shapes([(None, None), dtypes.float32], ret=[(None, None), dtypes.float32])
+    def __call__(self, x: Tensor):
+        return self.activation_fn(self.linear(x))
+
+    def get_learnable_params(self):
+        return [self.linear.weight, self.linear.bias]
 
 
 @dataclass
@@ -195,14 +242,19 @@ class KAN:
         out_count: int,
         hidden_layer_defs: List[HiddenLayerDef],
         Layer=BatchKANCubicLayer,
+        FirstLayer=None,
         layer_params: dict = {},
         post_activation_fn: Optional[str] = None,
     ):
+        FirstLayer = FirstLayer or Layer
+
         if len(hidden_layer_defs) == 0:
-            self.layers = [Layer(in_count, out_count, **layer_params)]
+            self.layers = [FirstLayer(in_count, out_count, **layer_params)]
             return
 
-        self.layers = [Layer(in_count, hidden_layer_defs[0].out_count)]
+        self.layers = [
+            FirstLayer(in_count, hidden_layer_defs[0].out_count, **layer_params)
+        ]
         for i in range(1, len(hidden_layer_defs)):
             self.layers.append(
                 Layer(
@@ -211,7 +263,9 @@ class KAN:
                     **layer_params,
                 )
             )
-        self.layers.append(Layer(hidden_layer_defs[-1].out_count, out_count))
+        self.layers.append(
+            Layer(hidden_layer_defs[-1].out_count, out_count, use_tanh=False)
+        )
 
         self.post_activation_fn = build_activation(post_activation_fn)
 
@@ -318,5 +372,11 @@ def run_model():
     model.plot_response(target_fn, input_domain=input_range)
 
 
+def plot_spline_layer_domain_and_range():
+    layer = BatchKANCubicBSplineLayer(1, 1, num_knots=8, spline_order=3, use_bias=True)
+    layer.plot_response(input_range=(-8, 8), resolution=100)
+
+
 if __name__ == "__main__":
-    run_model()
+    # run_model()
+    plot_spline_layer_domain_and_range()

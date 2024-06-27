@@ -37,7 +37,7 @@ class TinyNN:
             x = self.activation_fn(x)
 
         x = self.layers[-1](x)
-        x = build_activation(self.post_activation_fn)(x)
+        x = self.post_activation_fn(x)
 
         return x
 

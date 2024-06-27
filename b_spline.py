@@ -1,6 +1,7 @@
 # Adapted from https://github.com/KindXiaoming/pykan/blob/master/kan/spline.py
 
-from tinygrad import Tensor
+from shape_checker import check_shapes
+from tinygrad import Tensor, dtypes
 
 
 def sigmoid(x: Tensor, k: float = 10.0) -> Tensor:
@@ -11,6 +12,11 @@ def smooth_step(x: Tensor, grid: Tensor, k: float = 10.0) -> Tensor:
     return sigmoid(x - grid[:, :-1], k) * (1 - sigmoid(x - grid[:, 1:], k))
 
 
+@check_shapes(
+    [(None, None), dtypes.float32],
+    [(None, None), dtypes.float32],
+    ret=[(None, None, None), dtypes.float32],
+)
 def B_batch(
     x: Tensor, grid: Tensor, order: int = 0, extend: bool = True, use_sigmoid_trick=True
 ) -> Tensor:
@@ -65,7 +71,7 @@ def B_batch(
 
     if order == 0:
         if use_sigmoid_trick:
-            value = smooth_step(x, grid, k=8)
+            value = smooth_step(x, grid, k=4)
         else:
             value = (x >= grid[:, :-1]) * (x < grid[:, 1:])
             # ^ this is not differentiable by tinygrad
@@ -87,6 +93,12 @@ def B_batch(
     return value
 
 
+@check_shapes(
+    [(None, None), dtypes.float32],
+    [(None, None), dtypes.float32],
+    [(None, None), dtypes.float32],
+    ret=[(None, None), dtypes.float32],
+)
 def coef2curve(
     x_eval: Tensor, grid: Tensor, coef: Tensor, order: int, use_sigmoid_trick=True
 ) -> Tensor:
@@ -125,8 +137,7 @@ def coef2curve(
     """
     # x_eval: (size, batch), grid: (size, grid), coef: (size, coef)
     # coef: (size, coef), B_batch: (size, coef, batch), summer over coef
-    if coef.dtype != x_eval.dtype:
-        coef = coef.cast(x_eval.dtype)
+
     return Tensor.einsum(
         "ij,ijk->ik",
         coef,
