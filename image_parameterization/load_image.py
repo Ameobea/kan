@@ -2,6 +2,7 @@ from PIL import Image
 import numpy as np
 from tinygrad import Tensor, dtypes
 from typing import List, Tuple
+from numba import njit
 
 from shape_checker import check_shapes
 
@@ -59,6 +60,7 @@ def get_pixel_value(
     return pixel_value
 
 
+@njit
 def get_pixel_value_np(
     img_data: np.ndarray,
     x: float,

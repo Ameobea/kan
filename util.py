@@ -13,6 +13,8 @@ def build_activation(activation_fn: Optional[str]) -> Callable[[Tensor], Tensor]
         return lambda x: x.tanh()
     if activation_fn == "relu":
         return lambda x: x.relu()
+    if activation_fn == "gelu":
+        return lambda x: x.gelu()
     if activation_fn == "sigmoid":
         return lambda x: x.sigmoid()
     if activation_fn is None:

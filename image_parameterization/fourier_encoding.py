@@ -1,6 +1,8 @@
 import numpy as np
+from numba import njit
 
 
+@njit
 def encode_coords(
     x: float, y: float, channels_per_dim=4, input_range=(-1, 1)
 ) -> np.ndarray:
@@ -21,9 +23,10 @@ def encode_coords(
     return np.array(channels, dtype=np.float32)
 
 
+@njit
 def encode_coord(x: float, channels_per_dim=4, input_range=(-1, 1)) -> np.ndarray:
     if channels_per_dim < 2:
-        return x
+        return np.array([x], dtype=np.float32)
 
     x = (x - input_range[0]) / (input_range[1] - input_range[0]) * 2 * np.pi
 
@@ -34,6 +37,7 @@ def encode_coord(x: float, channels_per_dim=4, input_range=(-1, 1)) -> np.ndarra
     return np.array(channels, dtype=np.float32)
 
 
+@njit
 def encode_inputs(
     coords: np.ndarray, channels_per_dim=4, input_range=(-1, 1)
 ) -> np.ndarray:

@@ -54,7 +54,7 @@ def check_shapes(*dec_args, **dec_kwargs):
 
             arg_ix = 0
             for arg in args:
-                if not isinstance(arg, Tensor):
+                if not isinstance(arg, Tensor) and not isinstance(arg, np.ndarray):
                     continue
 
                 expected_shape = dec_args[arg_ix]
@@ -72,14 +72,14 @@ def check_shapes(*dec_args, **dec_kwargs):
                 if expected_shape is None:
                     continue
 
-                if isinstance(arg, Tensor):
+                if isinstance(arg, Tensor) or isinstance(arg, np.ndarray):
                     check_shape(arg, expected_shape)
 
             out = fn(*args, **kwargs)
             if return_shape is None:
                 return out
 
-            if isinstance(out, Tensor):
+            if isinstance(out, Tensor) or isinstance(out, np.ndarray):
                 check_shape(out, return_shape)
 
             return out

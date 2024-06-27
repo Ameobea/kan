@@ -5,6 +5,7 @@ import sys
 import matplotlib.pyplot as plt
 from tinygrad import Tensor, dtypes, TinyJit, nn
 import numpy as np
+from numba import njit
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -16,6 +17,9 @@ from shape_checker import check_shape, check_shapes
 from tiny_kan import KAN, BatchKANQuadraticLayer, HiddenLayerDef
 from tiny_nn import TinyNN
 
+# set numpy rng seed for reproducibility
+np.random.seed(0)
+
 
 def load_training_data(
     fname: str = "/Users/casey/Downloads/full.png",
@@ -26,13 +30,12 @@ def load_training_data(
     full_img_tensor = load_image(fname)
     img_width, img_height = full_img_tensor.shape[0], full_img_tensor.shape[1]
 
-    rng = np.random.default_rng(rng_seed)
-    slice_x_coords = rng.uniform(
+    slice_x_coords = np.random.uniform(
         low=0,
         high=img_width - size_px - 1,
         size=slice_count,
     )
-    slice_y_coords = rng.uniform(
+    slice_y_coords = np.random.uniform(
         low=0,
         high=img_height - size_px - 1,
         size=slice_count,
@@ -51,6 +54,7 @@ def load_training_data(
 
 
 # Acts as a sort of psuedo-embedding for slices
+@njit
 def encode_slice_ix(
     slice_ix: Union[int, float], slice_count: int, channels_per_dim=3
 ) -> np.ndarray:
@@ -61,10 +65,11 @@ def encode_slice_ix(
     return encode_coord(slice_ix, channels_per_dim=channels_per_dim)
 
 
-rng = np.random.default_rng(0)
+# rng = np.random.default_rng(0)
 
 
-@check_shapes(ret=[(None, None), dtypes.float32])
+# @check_shapes(ret=[(None, None), dtypes.float32])
+@njit("float32[:](int32, int32, float32, float32, int32, int32)")
 def encode_input(
     slice_count: int,
     slice_ix: int,
@@ -73,31 +78,37 @@ def encode_input(
     slice_ix_channels_per_dim: int = 3,
     coords_channels_per_dim: int = 4,
 ) -> np.ndarray:
-    encoded_slice_ix = encode_slice_ix(
+    encoded = np.zeros(
+        (slice_ix_channels_per_dim + coords_channels_per_dim * 2,), dtype=np.float32
+    )
+    encoded[:slice_ix_channels_per_dim] = encode_slice_ix(
         slice_ix, slice_count, channels_per_dim=slice_ix_channels_per_dim
     )
-    coords = encode_coords(x, y, channels_per_dim=coords_channels_per_dim)
-    return np.concatenate([encoded_slice_ix, coords], axis=0)
+    encoded[slice_ix_channels_per_dim:] = encode_coords(
+        x, y, channels_per_dim=coords_channels_per_dim
+    )
+    return encoded
 
 
 @check_shapes(ret=([(None, None), dtypes.float32]))
+@njit
 def build_training_inputs(
     training_data: List[np.ndarray],
     batch_size: int,
     slice_ix_channels_per_dim: int = 3,
     coords_channels_per_dim: int = 4,
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> Tuple[np.ndarray, np.ndarray]:
     input_size = slice_ix_channels_per_dim + coords_channels_per_dim * 2
-    raw_inputs = np.zeros((batch_size, 3), dtype=np.float32)
     encoded_inputs = np.zeros((batch_size, input_size), dtype=np.float32)
     expected_ys = np.zeros((batch_size, 1), dtype=np.float32)
 
-    slice_indices = rng.integers(0, len(training_data), size=batch_size)
+    # slice_indices = rng.integers(0, len(training_data), size=batch_size)
+    slice_indices = np.random.randint(0, len(training_data), size=batch_size)
 
     for i in range(batch_size):
-        x, y = rng.uniform(low=-1, high=1, size=2)
+        x, y = np.random.uniform(low=-1, high=1, size=2)
 
-        encoded_inputs[i] = encode_input(
+        encoded = encode_input(
             len(training_data),
             slice_indices[i],
             x,
@@ -105,17 +116,14 @@ def build_training_inputs(
             slice_ix_channels_per_dim=slice_ix_channels_per_dim,
             coords_channels_per_dim=coords_channels_per_dim,
         )
+        encoded_inputs[i] = encoded
 
         slice_ix = slice_indices[i]
-        raw_inputs[i, 0] = slice_ix
-        raw_inputs[i, 1] = x
-        raw_inputs[i, 2] = y
-
         img_slice = training_data[slice_ix]
         expected_y = get_pixel_value_np(img_slice, x, y, interpolation="bilinear")
         expected_ys[i] = float(expected_y)
 
-    return Tensor(raw_inputs), Tensor(encoded_inputs), Tensor(expected_ys)
+    return encoded_inputs, expected_ys
 
 
 def plot_slice(ax, slice: np.ndarray):
@@ -201,18 +209,18 @@ if __name__ == "__main__":
         input_size,
         1,
         [
-            HiddenLayerDef(1024),
+            # HiddenLayerDef(1024),
             HiddenLayerDef(512),
+            # HiddenLayerDef(256),
+            # HiddenLayerDef(256),
             HiddenLayerDef(256),
-            HiddenLayerDef(256),
-            HiddenLayerDef(256),
-            HiddenLayerDef(256),
+            HiddenLayerDef(128),
         ],
         Layer=BatchKANQuadraticLayer,
         post_activation_fn="tanh",
     )
 
-    # model = TinyNN(input_size, 1, [1024, 1024, 512, 512, 512, 512])
+    # model = TinyNN(input_size, 1, [1024, 512, 512, 512, 512], activation_fn="tanh")
 
     all_params = model.get_learnable_params()
     print("PARAM COUNT: ", model.param_count())
@@ -223,14 +231,11 @@ if __name__ == "__main__":
 
     @TinyJit
     @check_shapes(
-        [(batch_size, 3), dtypes.float32],
         [(batch_size, None), dtypes.float32],
         [(batch_size, 1), dtypes.float32],
         ret=[(), dtypes.float32],
     )
-    def train_step(
-        unencoded_x: Tensor, encoded_x: Tensor, y_expected: Tensor
-    ) -> Tensor:
+    def train_step(encoded_x: Tensor, y_expected: Tensor) -> Tensor:
         with Tensor.train():
             opt.zero_grad()
 
@@ -243,17 +248,15 @@ if __name__ == "__main__":
             return loss
 
     with Tensor.train():
-        for step in range(2000):
-            raw_x, encoded_x, expected_y = build_training_inputs(
+        for step in range(20000):
+            encoded_x, expected_y = build_training_inputs(
                 training_data,
                 batch_size,
                 slice_ix_channels_per_dim=slice_ix_channels_per_dim,
                 coords_channels_per_dim=coord_channels_per_dim,
             )
 
-            loss = train_step(
-                raw_x.realize(), encoded_x.realize(), expected_y.realize()
-            )
+            loss = train_step(Tensor(encoded_x), Tensor(expected_y))
             print(f"step: {step}, loss: {loss.numpy()}")
 
     plot_expected_vs_actual_for_slice(
