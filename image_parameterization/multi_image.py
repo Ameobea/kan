@@ -11,6 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
+from image_parameterization.grid_search import grid_search
 from image_parameterization.load_image import get_pixel_value_np, load_image
 from image_parameterization.fourier_encoding import encode_coord, encode_coords
 from image_parameterization.image_embedding import embed_images
@@ -22,17 +23,16 @@ from tiny_kan import (
     BatchKANCubicBSplineLayer,
     NNLayer,
 )
-from tiny_nn import TinyNN
 
 # set numpy rng seed for reproducibility
 np.random.seed(0)
+Tensor.manual_seed(0)
 
 
 def load_training_data(
-    fname: str = "/Users/casey/Downloads/full.png",
+    fname: str = "/home/casey/Downloads/full.png",
     size_px: int = 64,
     slice_count: int = 8,
-    rng_seed: int = 0,
 ) -> List[np.ndarray]:
     full_img_tensor = load_image(fname)
     img_width, img_height = full_img_tensor.shape[0], full_img_tensor.shape[1]
@@ -148,17 +148,16 @@ def plot_slice(ax, slice: np.ndarray):
     ax.axis("off")
 
 
-def plot_model_response(
-    ax,
+def build_slice_eval_inputs(
     slice_count: int,
     slice_ix: int,
     embedding: Optional[np.ndarray],
-    model: KAN,
     slice_ix_channels_per_dim: int = 3,
     coords_channels_per_dim: int = 4,
     resolution=100,
-):
+) -> Tuple[Tensor, Tensor]:
     inputs = []
+    raw_coords = []
     for y_ix in range(resolution):
         y_coord = 2 * y_ix / resolution - 1
         for x_ix in range(resolution):
@@ -173,6 +172,7 @@ def plot_model_response(
                 coords_channels_per_dim,
             )
             inputs.append(model_input)
+            raw_coords.append((x_coord, y_coord))
 
     inputs = Tensor(np.array(inputs, dtype=np.float32))
     check_shape(
@@ -183,11 +183,80 @@ def plot_model_response(
         ],
     )
 
+    raw_coords = Tensor(np.array(raw_coords, dtype=np.float32))
+    check_shape(raw_coords, [(resolution**2, 2), dtypes.float32])
+
+    return inputs, raw_coords
+
+
+def plot_model_response(
+    ax,
+    slice_count: int,
+    slice_ix: int,
+    embedding: Optional[np.ndarray],
+    model: KAN,
+    slice_ix_channels_per_dim: int = 3,
+    coords_channels_per_dim: int = 4,
+    resolution=100,
+):
+    inputs, _raw_coords = build_slice_eval_inputs(
+        slice_count,
+        slice_ix,
+        embedding,
+        slice_ix_channels_per_dim=slice_ix_channels_per_dim,
+        coords_channels_per_dim=coords_channels_per_dim,
+        resolution=resolution,
+    )
+
     outputs = model(inputs).numpy().reshape((resolution, resolution))
     im = ax.imshow(outputs, cmap="gray")
     ax.set_title("Model Output")
     ax.axis("off")
     plt.colorbar(im, ax=ax)
+
+
+def eval_model_full(
+    model: KAN,
+    embedding: Optional[np.ndarray],
+    training_data: List[np.ndarray],
+    slice_count: int,
+    slice_ix_channels_per_dim: int,
+    coords_channels_per_dim: int,
+    resolution: int = 100,
+) -> float:
+    """
+    Evaluates the model for `resolution * resolution` points for each slice, returning the average loss.
+    """
+
+    total_loss = 0
+    for slice_ix in range(slice_count):
+        inputs, raw_coords = build_slice_eval_inputs(
+            slice_count,
+            slice_ix,
+            embedding,
+            slice_ix_channels_per_dim=slice_ix_channels_per_dim,
+            coords_channels_per_dim=coords_channels_per_dim,
+            resolution=resolution,
+        )
+
+        expected_y = []
+        img_slice = training_data[slice_ix]
+        for x, y in raw_coords.numpy():
+            expected_y.append(
+                get_pixel_value_np(img_slice, x, y, interpolation="bilinear")
+            )
+        expected_y = Tensor(np.array(expected_y, dtype=np.float32))
+        check_shape(expected_y, [(resolution**2,), dtypes.float32])
+        expected_y = expected_y.unsqueeze(1)
+        check_shape(expected_y, [(resolution**2, 1), dtypes.float32])
+
+        y_pred = model(inputs)
+        check_shape(y_pred, [(resolution**2, 1), dtypes.float32])
+
+        loss = (y_pred - expected_y).pow(2).mean()
+        total_loss += float(loss.numpy())
+
+    return total_loss / slice_count
 
 
 def plot_expected_vs_actual_for_slice(
@@ -218,59 +287,49 @@ def plot_expected_vs_actual_for_slice(
     plt.show()
 
 
-if __name__ == "__main__":
-    slice_count = 8
-    training_data = load_training_data(slice_count=slice_count)
-
-    slice_ix_channels_per_dim = 3
-    # embedding = embed_images(training_data, n_dims=slice_ix_channels_per_dim)
+def build_model(
+    training_data: List[np.ndarray],
+    use_embedding: bool,
+    slice_ix_channels_per_dim: int,
+    coord_channels_per_dim: int,
+    FirstLayer,
+    Layer,
+    hidden_layer_defs: List[HiddenLayerDef],
+) -> Tuple[KAN, Optional[np.ndarray]]:
     embedding = None
+    if use_embedding:
+        embedding = embed_images(training_data, n_dims=slice_ix_channels_per_dim)
+        # scale embeddings to [-1, 1]
+        embedding = (
+            2 * (embedding - embedding.min()) / (embedding.max() - embedding.min()) - 1
+        )
 
-    coord_channels_per_dim = 8
     input_size = slice_ix_channels_per_dim + coord_channels_per_dim * 2
     model = KAN(
         input_size,
         1,
-        [
-            # HiddenLayerDef(256),
-            HiddenLayerDef(128),
-            HiddenLayerDef(64),
-            # HiddenLayerDef(48),
-            HiddenLayerDef(48),
-            HiddenLayerDef(32),
-            # HiddenLayerDef(16),
-        ],
-        # FirstLayer=NNLayer,
-        # Layer=NNLayer,
-        FirstLayer=BatchKANQuadraticLayer,
-        Layer=BatchKANQuadraticLayer,
+        hidden_layer_defs,
+        FirstLayer=FirstLayer,
+        Layer=Layer,
         post_activation_fn=None,
     )
 
-    # model = KAN(
-    #     input_size,
-    #     1,
-    #     [
-    #         HiddenLayerDef(226),
-    #         # HiddenLayerDef(128),
-    #         HiddenLayerDef(90),
-    #         HiddenLayerDef(60),
-    #         HiddenLayerDef(30),
-    #     ],
-    #     Layer=NNLayer,
-    #     post_activation_fn=None,
-    # )
+    return model, embedding
 
-    # model = TinyNN(
-    #     input_size, 1, [400, 180, 80, 40], activation_fn="tanh", post_activation_fn=None
-    # )
 
+def train_model(
+    training_data: List[np.ndarray],
+    model: KAN,
+    embedding: Optional[np.ndarray],
+    slice_ix_channels_per_dim: int = 3,
+    coord_channels_per_dim: int = 8,
+    batch_size: int = 1024 * 4,
+    learning_rate: float = 0.005,
+    epochs: int = 20_000,
+    quiet=False,
+) -> Tuple[KAN, Optional[np.ndarray]]:
     all_params = model.get_learnable_params()
-    print("PARAM COUNT: ", model.param_count())
-    # raise 1
-
-    opt = nn.optim.Adam(list(all_params), lr=0.005)
-    batch_size = 1024 * 2
+    opt = nn.optim.Adam(list(all_params), lr=learning_rate)
 
     @TinyJit
     @check_shapes(
@@ -291,7 +350,7 @@ if __name__ == "__main__":
             return loss
 
     with Tensor.train():
-        for step in range(20_000):
+        for step in range(epochs):
             encoded_x, expected_y = build_training_inputs(
                 training_data,
                 batch_size,
@@ -301,7 +360,48 @@ if __name__ == "__main__":
             )
 
             loss = train_step(Tensor(encoded_x), Tensor(expected_y))
-            print(f"step: {step}, loss: {loss.numpy()}")
+            if not quiet:
+                print(f"step: {step}, loss: {loss.numpy()}")
+
+    return model, embedding
+
+
+def train_and_plot_model():
+    slice_count = 256
+    use_embedding = True
+    slice_ix_channels_per_dim = 3
+    coord_channels_per_dim = 8
+    batch_size = 1024 * 1
+    learning_rate = 0.005
+    epochs = 200
+
+    hidden_layer_defs = [
+        HiddenLayerDef(512),
+        HiddenLayerDef(256),
+        HiddenLayerDef(128),
+        HiddenLayerDef(64),
+        HiddenLayerDef(48),
+        HiddenLayerDef(32),
+    ]
+
+    training_data = load_training_data(slice_count=slice_count)
+
+    model, embedding = train_model(
+        training_data,
+        use_embedding=use_embedding,
+        slice_ix_channels_per_dim=slice_ix_channels_per_dim,
+        coord_channels_per_dim=coord_channels_per_dim,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        hidden_layer_defs=hidden_layer_defs,
+        epochs=epochs,
+        quiet=False,
+    )
+
+    eval_loss = eval_model_full(
+        model, embedding, slice_count, slice_ix_channels_per_dim, coord_channels_per_dim
+    )
+    print(f"Eval loss: {eval_loss}")
 
     plot_expected_vs_actual_for_slice(
         training_data,
@@ -336,3 +436,46 @@ if __name__ == "__main__":
         coords_channels_per_dim=coord_channels_per_dim,
     )
     plt.show()
+
+
+def run_grid_search():
+    static_params = {
+        "slice_count": 16,
+        "use_embedding": True,
+        "slice_ix_channels_per_dim": 3,
+        "coord_channels_per_dim": 8,
+        "batch_size": 512,
+        "hidden_layer_defs": [
+            # HiddenLayerDef(512),
+            # HiddenLayerDef(256),
+            HiddenLayerDef(128),
+            HiddenLayerDef(64),
+            HiddenLayerDef(48),
+            HiddenLayerDef(32),
+        ],
+        "FirstLayer": BatchKANQuadraticLayer,
+        "Layer": BatchKANQuadraticLayer,
+        "learning_rate": 0.005,
+        "epochs": 20_000,
+    }
+
+    dynamic_param_bounds = {
+        "learning_rate": [0.001, 0.01],
+        "epochs": [100, 300, 300],
+    }
+
+    grid_search(
+        build_model,
+        train_model,
+        eval_model_full,
+        load_training_data,
+        "hyperparameter_results.db",
+        static_params,
+        dynamic_param_bounds,
+    )
+
+
+if __name__ == "__main__":
+    # train_and_plot_model()
+
+    run_grid_search()

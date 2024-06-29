@@ -45,6 +45,11 @@ class BatchKANCubicLayer:
 
         return y
 
+    def __repr__(self):
+        return (
+            f"BatchKANCubicLayer(in_count={self.in_count}, out_count={self.out_count})"
+        )
+
     def get_learnable_params(self) -> List[Tensor]:
         return [
             self.a,
@@ -94,6 +99,9 @@ class BatchKANQuadraticLayer:
             y = y.tanh()
 
         return y
+
+    def __repr__(self):
+        return f"BatchKANQuadraticLayer(in_count={self.in_count}, out_count={self.out_count})"
 
     def get_learnable_params(self) -> List[Tensor]:
         params = [
@@ -183,6 +191,9 @@ class BatchKANCubicBSplineLayer:
 
         return y
 
+    def __repr__(self):
+        return f"BatchKANCubicBSplineLayer(in_count={self.in_count}, out_count={self.out_count}, num_knots={self.num_knots}, spline_order={self.order}, use_post_weights={self.post_weights is not None}, use_bias={self.bias is not None}, use_skip_conn_weights={self.skip_conn_weights is not None})"
+
     def get_learnable_params(self):
         params = [self.coefficients]
         if self.skip_conn_weights is not None:
@@ -220,11 +231,15 @@ class NNLayer:
         self.out_count = out_count
 
         self.linear = nn.Linear(in_count, out_count)
+        self.activation_fn_name = activation_fn
         self.activation_fn = build_activation(activation_fn)
 
     @check_shapes([(None, None), dtypes.float32], ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor):
         return self.activation_fn(self.linear(x))
+
+    def __repr__(self):
+        return f"NNLayer(in_count={self.in_count}, out_count={self.out_count}, activation_fn={self.activation_fn_name})"
 
     def get_learnable_params(self):
         return [self.linear.weight, self.linear.bias]
@@ -267,6 +282,7 @@ class KAN:
             Layer(hidden_layer_defs[-1].out_count, out_count, use_tanh=False)
         )
 
+        self.post_activation_fn_name = post_activation_fn
         self.post_activation_fn = build_activation(post_activation_fn)
 
     @check_shapes((None, None))
@@ -276,6 +292,9 @@ class KAN:
 
         x = self.post_activation_fn(x)
         return x
+
+    def __repr__(self):
+        return f"KAN(layers={[repr(layer) for layer in self.layers]}, post_activation_fn={self.post_activation_fn_name})"
 
     def get_learnable_params(self):
         params = []
@@ -322,7 +341,7 @@ class KAN:
         plt.show()
 
 
-def run_model():
+def run_model(quiet=False):
     model = KAN(
         1,
         1,
@@ -366,7 +385,8 @@ def run_model():
         for step in range(30000):
             x = Tensor(generate_input(batch_size))
             loss = train_step(x)
-            print(f"step: {step}, loss: {loss.numpy()}")
+            if not quiet:
+                print(f"step: {step}, loss: {loss.numpy()}")
 
     model.plot_neuron_responses(input_domain=input_range)
     model.plot_response(target_fn, input_domain=input_range)

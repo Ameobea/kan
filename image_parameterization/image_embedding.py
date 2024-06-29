@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 from shape_checker import check_shape, check_shapes
 
 
+pymde.seed(0)
+
+
 @check_shapes(ret=[(None, None), np.float32])
 def embed_images(imgs: List[np.ndarray], n_dims=2) -> np.ndarray:
     img_count = len(imgs)
@@ -29,9 +32,8 @@ def embed_images(imgs: List[np.ndarray], n_dims=2) -> np.ndarray:
     )
 
     embedding = mde.embed()
-    print(embedding)
 
-    mde.plot(marker_size=16)
-    plt.show()
+    # mde.plot(marker_size=16)
+    # plt.show()
 
     return embedding.numpy()
