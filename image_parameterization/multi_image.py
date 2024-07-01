@@ -1,26 +1,34 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import os
 import sys
 
 import matplotlib.pyplot as plt
-from tinygrad import Tensor, dtypes, TinyJit, nn
+from tinygrad import Tensor, Device, dtypes, TinyJit, nn
 import numpy as np
 from numba import njit
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
+sys.path.append(os.path.expanduser("~/tinygrad"))
 
 from image_parameterization.grid_search import grid_search
 from image_parameterization.load_image import get_pixel_value_np, load_image
-from image_parameterization.fourier_encoding import encode_coord, encode_coords
+from image_parameterization.fourier_encoding import (
+    encode_coord,
+    encode_coords,
+    encode_coords_tensor,
+)
 from image_parameterization.image_embedding import embed_images
 from shape_checker import check_shape, check_shapes
+
+from extra.export_model import export_model
 from tiny_kan import (
     KAN,
+    BatchKANCubicLayer,
     BatchKANQuadraticLayer,
     HiddenLayerDef,
-    BatchKANCubicBSplineLayer,
+    BatchKANBSplineLayer,
     NNLayer,
 )
 
@@ -30,11 +38,11 @@ Tensor.manual_seed(0)
 
 
 def load_training_data(
-    fname: str = "/home/casey/Downloads/full.png",
+    fname: str = "~/Downloads/full.png",
     size_px: int = 64,
     slice_count: int = 8,
 ) -> List[np.ndarray]:
-    full_img_tensor = load_image(fname)
+    full_img_tensor = load_image(os.path.expanduser(fname))
     img_width, img_height = full_img_tensor.shape[0], full_img_tensor.shape[1]
 
     slice_x_coords = np.random.uniform(
@@ -294,7 +302,9 @@ def build_model(
     coord_channels_per_dim: int,
     FirstLayer,
     Layer,
+    LastLayer,
     hidden_layer_defs: List[HiddenLayerDef],
+    base_layer_params: Dict[str, Any] = {},
 ) -> Tuple[KAN, Optional[np.ndarray]]:
     embedding = None
     if use_embedding:
@@ -311,6 +321,8 @@ def build_model(
         hidden_layer_defs,
         FirstLayer=FirstLayer,
         Layer=Layer,
+        LastLayer=LastLayer,
+        layer_params=base_layer_params,
         post_activation_fn=None,
     )
 
@@ -360,46 +372,157 @@ def train_model(
             )
 
             loss = train_step(Tensor(encoded_x), Tensor(expected_y))
+            loss = float(loss.numpy())
             if not quiet:
-                print(f"step: {step}, loss: {loss.numpy()}")
+                print(f"step: {step}, loss: {loss}")
+
+            if loss > 500.0:
+                raise ValueError("Training diverged")
 
     return model, embedding
 
 
+def export_model(
+    model: KAN,
+    training_data: List[np.ndarray],
+    use_embedding: bool,
+    slice_ix_channels_per_dim: int,
+    coord_channels_per_dim: int,
+    FirstLayer,
+    Layer,
+    LastLayer,
+    hidden_layer_defs: List[HiddenLayerDef],
+    base_layer_params: Dict[str, Any] = {},
+    out_fname: str = "/tmp/out.c",
+):
+    Device.DEFAULT = "CLANG"
+
+    clone_model, clone_embedding = build_model(
+        training_data,
+        use_embedding,
+        slice_ix_channels_per_dim,
+        coord_channels_per_dim,
+        FirstLayer,
+        Layer,
+        LastLayer,
+        hidden_layer_defs,
+        base_layer_params=base_layer_params,
+    )
+    for layer_ix in range(len(clone_model.layers)):
+        old_layer = model.layers[layer_ix]
+        new_layer = clone_model.layers[layer_ix]
+
+        if isinstance(old_layer, NNLayer):
+            new_layer.linear.weight = Tensor(old_layer.linear.weight.numpy())
+            new_layer.linear.bias = Tensor(old_layer.linear.bias.numpy())
+        else:
+            raise ValueError("Unsupported layer type")
+
+    def wrapped_clone_model(encoded_slice_ix: Tensor, coords: Tensor) -> Tensor:
+        encoded_coord = encode_coords_tensor(
+            coords, channels_per_dim=coord_channels_per_dim
+        )
+        inputs = encoded_slice_ix.cat(encoded_coord, dim=1)
+        check_shape(inputs, [(None, 19), dtypes.float32])
+        return clone_model(inputs)
+
+    export_inputs = [Tensor.uniform(1024, 3), Tensor.uniform(1024, 2)]
+
+    prg, inp_sizes, out_sizes, state = export_model(
+        wrapped_clone_model, "clang", *export_inputs
+    )
+
+    with open(out_fname, "wt") as f:
+        f.write(prg)
+
+    print(f"Exported model to {out_fname}")
+    print(inp_sizes)
+    print(out_sizes)
+
+
 def train_and_plot_model():
-    slice_count = 256
-    use_embedding = True
+    slice_count = 8
+    use_embedding = False
     slice_ix_channels_per_dim = 3
     coord_channels_per_dim = 8
-    batch_size = 1024 * 1
+    batch_size = 1024 * 16
     learning_rate = 0.005
-    epochs = 200
+    epochs = 1_0
+    FirstLayer = NNLayer
+    Layer = NNLayer
+    LastLayer = NNLayer
+    base_layer_params = {
+        "use_tanh": True,
+        "use_pre_tanh_post_weights": True,
+        "use_pre_tanh_bias": True,
+        # "use_post_tanh_post_weights": True,
+        "use_post_tanh_bias": True,
+        "use_base_fn": False,
+        "num_knots": 5,
+        "spline_order": 2,
+        "use_skip_conn_weights": True,
+    }
 
     hidden_layer_defs = [
-        HiddenLayerDef(512),
-        HiddenLayerDef(256),
-        HiddenLayerDef(128),
-        HiddenLayerDef(64),
-        HiddenLayerDef(48),
-        HiddenLayerDef(32),
+        HiddenLayerDef(195),
+        HiddenLayerDef(98),
+        HiddenLayerDef(50),
+        HiddenLayerDef(25),
+        HiddenLayerDef(12),
+        HiddenLayerDef(6),
+        HiddenLayerDef(2),
     ]
 
     training_data = load_training_data(slice_count=slice_count)
 
+    model, embedding = build_model(
+        training_data,
+        use_embedding,
+        slice_ix_channels_per_dim,
+        coord_channels_per_dim,
+        FirstLayer,
+        Layer,
+        LastLayer,
+        hidden_layer_defs,
+        base_layer_params=base_layer_params,
+    )
+    print(f"PARAM COUNT: {model.param_count()}")
+    if model.param_count() > 30_000:
+        raise ValueError("Model too large")
+
     model, embedding = train_model(
         training_data,
-        use_embedding=use_embedding,
+        model,
+        embedding,
         slice_ix_channels_per_dim=slice_ix_channels_per_dim,
         coord_channels_per_dim=coord_channels_per_dim,
         batch_size=batch_size,
         learning_rate=learning_rate,
-        hidden_layer_defs=hidden_layer_defs,
         epochs=epochs,
         quiet=False,
     )
 
+    # export_model(
+    #     model,
+    #     training_data,
+    #     use_embedding,
+    #     slice_ix_channels_per_dim,
+    #     coord_channels_per_dim,
+    #     FirstLayer,
+    #     Layer,
+    #     LastLayer,
+    #     hidden_layer_defs,
+    #     base_layer_params=base_layer_params,
+    #     out_fname="/tmp/out.c",
+    # )
+
     eval_loss = eval_model_full(
-        model, embedding, slice_count, slice_ix_channels_per_dim, coord_channels_per_dim
+        model,
+        embedding,
+        training_data,
+        slice_count,
+        slice_ix_channels_per_dim,
+        coord_channels_per_dim,
     )
     print(f"Eval loss: {eval_loss}")
 
@@ -441,13 +564,13 @@ def train_and_plot_model():
 def run_grid_search():
     static_params = {
         "slice_count": 16,
-        "use_embedding": True,
+        "use_embedding": False,
         "slice_ix_channels_per_dim": 3,
         "coord_channels_per_dim": 8,
-        "batch_size": 512,
+        "batch_size": 1024 * 2,
         "hidden_layer_defs": [
             # HiddenLayerDef(512),
-            # HiddenLayerDef(256),
+            HiddenLayerDef(256),
             HiddenLayerDef(128),
             HiddenLayerDef(64),
             HiddenLayerDef(48),
@@ -460,8 +583,9 @@ def run_grid_search():
     }
 
     dynamic_param_bounds = {
-        "learning_rate": [0.001, 0.01],
-        "epochs": [100, 300, 300],
+        "slice_count": [16, 32, 64, 128, 256],
+        # "use_embedding": [True, False],
+        "coord_channels_per_dim": [4, 8, 12, 16],
     }
 
     grid_search(
@@ -476,6 +600,6 @@ def run_grid_search():
 
 
 if __name__ == "__main__":
-    # train_and_plot_model()
+    train_and_plot_model()
 
-    run_grid_search()
+    # run_grid_search()

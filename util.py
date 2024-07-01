@@ -17,6 +17,10 @@ def build_activation(activation_fn: Optional[str]) -> Callable[[Tensor], Tensor]
         return lambda x: x.gelu()
     if activation_fn == "sigmoid":
         return lambda x: x.sigmoid()
-    if activation_fn is None:
+    if (
+        activation_fn is None
+        or activation_fn == "identity"
+        or activation_fn == "linear"
+    ):
         return lambda x: x
     raise ValueError(f"Unknown activation function: {activation_fn}")

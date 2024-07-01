@@ -16,17 +16,18 @@ def create_database(db_path: str):
             """
             CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                slice_count INTEGER,
-                use_embedding BOOLEAN,
-                slice_ix_channels_per_dim INTEGER,
-                coord_channels_per_dim INTEGER,
-                batch_size INTEGER,
-                learning_rate REAL,
-                epochs INTEGER,
-                model_repr TEXT,
-                eval_loss REAL,
-                training_time REAL,
-                param_count INTEGER
+                slice_count INTEGER NOT NULL,
+                use_embedding BOOLEAN NOT NULL,
+                slice_ix_channels_per_dim INTEGER NOT NULL,
+                coord_channels_per_dim INTEGER NOT NULL,
+                batch_size INTEGER NOT NULL,
+                learning_rate REAL NOT NULL,
+                epochs INTEGER NOT NULL,
+                model_repr TEXT NOT NULL,
+                eval_loss REAL NOT NULL,
+                training_time REAL NOT NULL,
+                param_count INTEGER NOT NULL,
+                run_end TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """
         )
@@ -141,10 +142,12 @@ def grid_search(
             FirstLayer=params["FirstLayer"],
             Layer=params["Layer"],
             hidden_layer_defs=params["hidden_layer_defs"],
+            base_layer_params=params["base_layer_params"],
         )
 
         print(f"\nRun {i + 1}/{total_runs}:")
         print(dynamic_params)
+        print(f"Param count: {model.param_count()}")
 
         # check if run already exists for these parameters
         run = get_run(db_path, model, params)

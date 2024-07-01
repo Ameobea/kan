@@ -7,7 +7,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
 from tinygrad import Tensor, nn, TinyJit, dtypes
-from dataclasses import dataclass
 import numpy as np
 from typing import Callable, List, Optional
 import matplotlib.pyplot as plt
@@ -17,11 +16,21 @@ from shape_checker import check_shapes, check_shape
 
 
 def init(shape) -> Tensor:
-    return Tensor.uniform(shape, low=-0.2, high=0.2, dtype=dtypes.float32)
+    return Tensor.uniform(shape, low=-0.25, high=0.25, dtype=dtypes.float32)
 
 
 class BatchKANCubicLayer:
-    def __init__(self, in_count: int, out_count: int, **kwargs):
+    def __init__(
+        self,
+        in_count: int,
+        out_count: int,
+        use_tanh=False,
+        use_pre_tanh_post_weights=False,
+        use_pre_tanh_bias=False,
+        use_post_tanh_post_weights=False,
+        use_post_tanh_bias=False,
+        **kwargs,
+    ):
         self.in_count = in_count
         self.out_count = out_count
 
@@ -29,35 +38,55 @@ class BatchKANCubicLayer:
         self.b = init((out_count, in_count))
         self.c = init((out_count, in_count))
 
-        self.bias = init((out_count,))
-        self.post_weights = init((out_count,))
+        self.use_tanh = use_tanh
 
+        self.pre_tanh_post_weights = (
+            init((out_count,)) if use_pre_tanh_post_weights else None
+        )
+        self.pre_tanh_bias = init((out_count,)) if use_pre_tanh_bias else None
+        self.post_tanh_post_weights = (
+            init((out_count,)) if use_post_tanh_post_weights else None
+        )
+        self.post_tanh_bias = init((out_count,)) if use_post_tanh_bias else None
+
+    @check_shapes(ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor):
         check_shape(x, [(None, self.in_count), dtypes.float32])
         x = x.unsqueeze(1)
-        check_shape(x, [(None, 1, self.in_count), dtypes.float32])
 
         y = self.a * x.pow(3) + self.b * x.pow(2) + self.c * x
-        y = y.sum(axis=-1)
+        y = y.sum(axis=-1).contiguous()
 
-        y = y * self.post_weights
-        y = y + self.bias
+        if self.pre_tanh_post_weights is not None:
+            y = y * self.pre_tanh_post_weights
+        if self.pre_tanh_bias is not None:
+            y = y + self.pre_tanh_bias
+
+        elif self.use_tanh:
+            y = y.tanh()
+
+        if self.post_tanh_post_weights is not None:
+            y = y * self.post_tanh_post_weights
+        if self.post_tanh_bias is not None:
+            y = y + self.post_tanh_bias
 
         return y
 
     def __repr__(self):
-        return (
-            f"BatchKANCubicLayer(in_count={self.in_count}, out_count={self.out_count})"
-        )
+        return f"BatchKANQuadraticLayer(in_count={self.in_count}, out_count={self.out_count}, use_tanh={self.use_tanh}, use_pre_tanh_post_weights={self.pre_tanh_post_weights is not None}, use_pre_tanh_bias={self.pre_tanh_bias is not None}, use_post_tanh_post_weights={self.post_tanh_post_weights is not None}, use_post_tanh_bias={self.post_tanh_bias is not None})"
 
     def get_learnable_params(self) -> List[Tensor]:
-        return [
-            self.a,
-            self.b,
-            self.c,
-            self.post_weights,
-            self.bias,
-        ]
+        params = [self.a, self.b, self.c]
+
+        if self.pre_tanh_post_weights is not None:
+            params.append(self.pre_tanh_post_weights)
+        if self.pre_tanh_bias is not None:
+            params.append(self.pre_tanh_bias)
+        if self.post_tanh_post_weights is not None:
+            params.append(self.post_tanh_post_weights)
+        if self.post_tanh_bias is not None:
+            params.append(self.post_tanh_bias)
+        return params
 
     def param_count(self) -> int:
         return sum(param_count(p) for p in self.get_learnable_params())
@@ -68,8 +97,12 @@ class BatchKANQuadraticLayer:
         self,
         in_count: int,
         out_count: int,
-        use_tanh=True,
-        use_tanh_weights=False,
+        use_tanh=False,
+        use_pre_tanh_post_weights=False,
+        use_pre_tanh_bias=False,
+        use_post_tanh_post_weights=False,
+        use_post_tanh_bias=False,
+        use_base_fn=False,
         **kwargs,
     ):
         self.in_count = in_count
@@ -78,10 +111,18 @@ class BatchKANQuadraticLayer:
         self.a = init((out_count, in_count))
         self.b = init((out_count, in_count))
 
-        self.bias = init((out_count,))
-        self.post_weights = init((out_count,))
-        self.tanh_weights = init((out_count,)) if use_tanh_weights else None
         self.use_tanh = use_tanh
+
+        self.pre_tanh_post_weights = (
+            init((out_count,)) if use_pre_tanh_post_weights else None
+        )
+        self.pre_tanh_bias = init((out_count,)) if use_pre_tanh_bias else None
+        self.post_tanh_post_weights = (
+            init((out_count,)) if use_post_tanh_post_weights else None
+        )
+        self.post_tanh_bias = init((out_count,)) if use_post_tanh_bias else None
+
+        self.base_weights = init((out_count, in_count)) if use_base_fn else None
 
     @check_shapes(ret=[(None, None), dtypes.float32])
     def __call__(self, x: Tensor):
@@ -89,36 +130,50 @@ class BatchKANQuadraticLayer:
         x = x.unsqueeze(1)
 
         y = self.a * x.pow(2) + self.b * x
-        y = y.sum(axis=-1)
 
-        y = y * self.post_weights
-        y = y + self.bias
-        if self.tanh_weights is not None:
-            y = self.tanh_weights * y.tanh() + (1 - self.tanh_weights) * y
+        if self.base_weights is not None:
+            y = y + self.base_weights * x.gelu()
+
+        y = y.sum(axis=-1).contiguous()
+
+        if self.pre_tanh_post_weights is not None:
+            y = y * self.pre_tanh_post_weights
+        if self.pre_tanh_bias is not None:
+            y = y + self.pre_tanh_bias
+
         elif self.use_tanh:
             y = y.tanh()
+
+        if self.post_tanh_post_weights is not None:
+            y = y * self.post_tanh_post_weights
+        if self.post_tanh_bias is not None:
+            y = y + self.post_tanh_bias
 
         return y
 
     def __repr__(self):
-        return f"BatchKANQuadraticLayer(in_count={self.in_count}, out_count={self.out_count})"
+        return f"BatchKANQuadraticLayer(in_count={self.in_count}, out_count={self.out_count}, use_tanh={self.use_tanh}, use_pre_tanh_post_weights={self.pre_tanh_post_weights is not None}, use_pre_tanh_bias={self.pre_tanh_bias is not None}, use_post_tanh_post_weights={self.post_tanh_post_weights is not None}, use_post_tanh_bias={self.post_tanh_bias is not None}, use_base_fn={self.base_weights is not None})"
 
     def get_learnable_params(self) -> List[Tensor]:
-        params = [
-            self.a,
-            self.b,
-            self.post_weights,
-            self.bias,
-        ]
-        if self.tanh_weights is not None:
-            params.append(self.tanh_weights)
+        params = [self.a, self.b]
+
+        if self.pre_tanh_post_weights is not None:
+            params.append(self.pre_tanh_post_weights)
+        if self.pre_tanh_bias is not None:
+            params.append(self.pre_tanh_bias)
+        if self.post_tanh_post_weights is not None:
+            params.append(self.post_tanh_post_weights)
+        if self.post_tanh_bias is not None:
+            params.append(self.post_tanh_bias)
+        if self.base_weights is not None:
+            params.append(self.base_weights)
         return params
 
     def param_count(self) -> int:
         return sum(param_count(p) for p in self.get_learnable_params())
 
 
-class BatchKANCubicBSplineLayer:
+class BatchKANBSplineLayer:
     def __init__(
         self,
         in_count: int,
@@ -128,6 +183,7 @@ class BatchKANCubicBSplineLayer:
         use_post_weights=True,
         use_bias=True,
         use_skip_conn_weights=False,
+        **kwargs,
     ):
         self.in_count = in_count
         self.out_count = out_count
@@ -192,7 +248,7 @@ class BatchKANCubicBSplineLayer:
         return y
 
     def __repr__(self):
-        return f"BatchKANCubicBSplineLayer(in_count={self.in_count}, out_count={self.out_count}, num_knots={self.num_knots}, spline_order={self.order}, use_post_weights={self.post_weights is not None}, use_bias={self.bias is not None}, use_skip_conn_weights={self.skip_conn_weights is not None})"
+        return f"BatchKANBSplineLayer(in_count={self.in_count}, out_count={self.out_count}, num_knots={self.num_knots}, spline_order={self.order}, use_post_weights={self.post_weights is not None}, use_bias={self.bias is not None}, use_skip_conn_weights={self.skip_conn_weights is not None})"
 
     def get_learnable_params(self):
         params = [self.coefficients]
@@ -245,9 +301,10 @@ class NNLayer:
         return [self.linear.weight, self.linear.bias]
 
 
-@dataclass
 class HiddenLayerDef:
-    out_count: int
+    def __init__(self, out_count: int, **kwargs):
+        self.out_count = out_count
+        self.kwargs = kwargs
 
 
 class KAN:
@@ -258,10 +315,12 @@ class KAN:
         hidden_layer_defs: List[HiddenLayerDef],
         Layer=BatchKANCubicLayer,
         FirstLayer=None,
+        LastLayer=None,
         layer_params: dict = {},
         post_activation_fn: Optional[str] = None,
     ):
         FirstLayer = FirstLayer or Layer
+        LastLayer = LastLayer or Layer
 
         if len(hidden_layer_defs) == 0:
             self.layers = [FirstLayer(in_count, out_count, **layer_params)]
@@ -271,15 +330,25 @@ class KAN:
             FirstLayer(in_count, hidden_layer_defs[0].out_count, **layer_params)
         ]
         for i in range(1, len(hidden_layer_defs)):
+            params = {**layer_params, **hidden_layer_defs[i].kwargs}
             self.layers.append(
                 Layer(
                     hidden_layer_defs[i - 1].out_count,
                     hidden_layer_defs[i].out_count,
-                    **layer_params,
+                    **params,
                 )
             )
+        last_layer_params = {
+            **layer_params,
+            "use_tanh": False,
+            "use_pre_tanh_post_weights": False,
+            "use_pre_tanh_bias": False,
+            "use_post_tanh_post_weights": False,
+            "use_post_tanh_bias": False,
+            "activation_fn": "linear",
+        }
         self.layers.append(
-            Layer(hidden_layer_defs[-1].out_count, out_count, use_tanh=False)
+            LastLayer(hidden_layer_defs[-1].out_count, out_count, **last_layer_params)
         )
 
         self.post_activation_fn_name = post_activation_fn
@@ -393,7 +462,7 @@ def run_model(quiet=False):
 
 
 def plot_spline_layer_domain_and_range():
-    layer = BatchKANCubicBSplineLayer(1, 1, num_knots=8, spline_order=3, use_bias=True)
+    layer = BatchKANBSplineLayer(1, 1, num_knots=8, spline_order=3, use_bias=True)
     layer.plot_response(input_range=(-8, 8), resolution=100)
 
 
