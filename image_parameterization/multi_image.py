@@ -22,7 +22,7 @@ from image_parameterization.fourier_encoding import (
 from image_parameterization.image_embedding import embed_images
 from shape_checker import check_shape, check_shapes
 
-from extra.export_model import export_model
+from extra.export_model import export_model as export_model_inner
 from tiny_kan import (
     KAN,
     BatchKANCubicLayer,
@@ -428,7 +428,7 @@ def export_model(
 
     export_inputs = [Tensor.uniform(1024, 3), Tensor.uniform(1024, 2)]
 
-    prg, inp_sizes, out_sizes, state = export_model(
+    prg, inp_sizes, out_sizes, state = export_model_inner(
         wrapped_clone_model, "clang", *export_inputs
     )
 
@@ -447,10 +447,10 @@ def train_and_plot_model():
     coord_channels_per_dim = 8
     batch_size = 1024 * 16
     learning_rate = 0.005
-    epochs = 1_0
-    FirstLayer = NNLayer
-    Layer = NNLayer
-    LastLayer = NNLayer
+    epochs = 10_000
+    FirstLayer = BatchKANBSplineLayer
+    Layer = BatchKANBSplineLayer
+    LastLayer = BatchKANBSplineLayer
     base_layer_params = {
         "use_tanh": True,
         "use_pre_tanh_post_weights": True,
@@ -459,17 +459,18 @@ def train_and_plot_model():
         "use_post_tanh_bias": True,
         "use_base_fn": False,
         "num_knots": 5,
-        "spline_order": 2,
+        "spline_order": 3,
         "use_skip_conn_weights": True,
+        "use_bias": True,
     }
 
     hidden_layer_defs = [
-        HiddenLayerDef(195),
-        HiddenLayerDef(98),
-        HiddenLayerDef(50),
-        HiddenLayerDef(25),
-        HiddenLayerDef(12),
-        HiddenLayerDef(6),
+        # HiddenLayerDef(195),
+        # HiddenLayerDef(98),
+        HiddenLayerDef(58),
+        HiddenLayerDef(28),
+        HiddenLayerDef(16),
+        HiddenLayerDef(8),
         HiddenLayerDef(2),
     ]
 

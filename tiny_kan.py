@@ -180,9 +180,10 @@ class BatchKANBSplineLayer:
         out_count: int,
         num_knots: int = 4,
         spline_order: int = 3,
-        use_post_weights=True,
+        use_spline_weights=True,
+        use_post_weights=False,
         use_bias=True,
-        use_skip_conn_weights=False,
+        use_skip_conn_weights=True,
         **kwargs,
     ):
         self.in_count = in_count
@@ -199,6 +200,7 @@ class BatchKANBSplineLayer:
         )
         self.post_weights = init((out_count,)) if use_post_weights else None
         self.bias = init((out_count,)) if use_bias else None
+        self.spline_weights = init((self.num_splines,)) if use_spline_weights else None
 
         domain = (-1, 1)
         self.grid = Tensor.einsum(
@@ -227,13 +229,13 @@ class BatchKANBSplineLayer:
         y = y.permute(1, 0)
         check_shape(y, [(batch_size, self.num_splines), dtypes.float32])
 
+        if self.spline_weights is not None:
+            y = y * self.spline_weights
+
         if self.skip_conn_weights is not None:
-            y = (
-                y
-                + (x.reshape(batch_size, self.num_splines) * self.skip_conn_weights)
-                .contiguous()
-                .gelu()
-            )
+            base = coef_x.silu().permute(1, 0)
+            check_shape(base, [(batch_size, self.num_splines), dtypes.float32])
+            y = y + self.skip_conn_weights.unsqueeze(0) * base
 
         y = y.reshape(batch_size, self.in_count, self.out_count)
         check_shape(y, [(batch_size, self.in_count, self.out_count), dtypes.float32])
@@ -252,6 +254,8 @@ class BatchKANBSplineLayer:
 
     def get_learnable_params(self):
         params = [self.coefficients]
+        if self.spline_weights is not None:
+            params.append(self.spline_weights)
         if self.skip_conn_weights is not None:
             params.append(self.skip_conn_weights)
         if self.post_weights is not None:
@@ -380,7 +384,7 @@ class KAN:
         input_domain=(-1, 1),
         resolution=100,
     ):
-        x = np.linspace(input_domain[0], input_domain[1], resolution)
+        x = np.linspace(input_domain[0], input_domain[1], resolution, dtype=np.float32)
         y_true = [target_fn(Tensor([i])).numpy()[0] for i in x]
         y_pred = self(Tensor(x).reshape(resolution, 1)).reshape(resolution).numpy()
 
@@ -395,7 +399,7 @@ class KAN:
         Plots the response of each neuron in the network with subplots
         """
 
-        x = np.linspace(input_domain[0], input_domain[1], resolution)
+        x = np.linspace(input_domain[0], input_domain[1], resolution, dtype=np.float32)
         x = Tensor(x).unsqueeze(1)
         x = x.expand(resolution, 1)
 
@@ -414,8 +418,8 @@ def run_model(quiet=False):
     model = KAN(
         1,
         1,
-        [HiddenLayerDef(4)],
-        Layer=BatchKANQuadraticLayer,
+        [HiddenLayerDef(4), HiddenLayerDef(4)],
+        Layer=BatchKANBSplineLayer,
     )
 
     all_params = model.get_learnable_params()
@@ -423,19 +427,19 @@ def run_model(quiet=False):
     opt = nn.optim.Adam(list(all_params), lr=0.01)
 
     def target_fn(x: Tensor):
-        # x_abs = (x * 1.5).abs()
-        # return x + x_abs - x_abs.trunc()
+        x_abs = (x * 1.5).abs()
+        return x + x_abs - x_abs.trunc()
 
         # return ((x * 8).sin() * 80).tanh()
         # return 1 if x < 0 else -1
-        return (x < 0).where(1, -1)
+        # return (x < 0).where(1, -1)
 
     input_range = (-2, 2)
 
     def generate_input(batch_size: int) -> np.ndarray:
         return np.random.uniform(input_range[0], input_range[1], (batch_size, 1))
 
-    batch_size = 32
+    batch_size = 256
 
     @TinyJit
     @check_shapes([(batch_size, 1), dtypes.float32], ret=[(), dtypes.float32])
@@ -451,8 +455,8 @@ def run_model(quiet=False):
             return loss
 
     with Tensor.train():
-        for step in range(30000):
-            x = Tensor(generate_input(batch_size))
+        for step in range(10_000):
+            x = Tensor(generate_input(batch_size), dtype=dtypes.float32)
             loss = train_step(x)
             if not quiet:
                 print(f"step: {step}, loss: {loss.numpy()}")
@@ -467,5 +471,5 @@ def plot_spline_layer_domain_and_range():
 
 
 if __name__ == "__main__":
-    # run_model()
-    plot_spline_layer_domain_and_range()
+    run_model()
+    # plot_spline_layer_domain_and_range()

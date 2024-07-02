@@ -151,23 +151,33 @@ def plot_random_spline():
 
     num_spline = 1
     num_sample = 1000
-    num_grid_interval = 10
-    spline_order = 1
+    num_knots = 2
+    num_grid_intervals = num_knots - 1
+    spline_order = 2
     domain = (-1, 1)
     domain_width = domain[1] - domain[0]
-    x_eval = Tensor(
-        np.linspace(domain[0] - domain_width, domain[1] + domain_width, num_sample)
-    ).reshape(num_spline, num_sample)
+    x_eval = Tensor(np.linspace(-8, 8, num_sample, dtype=np.float32)).reshape(
+        num_spline, num_sample
+    )
 
     grids = Tensor.einsum(
         "i,j->ij",
-        Tensor.ones(num_spline),
-        Tensor(np.linspace(domain[0], domain[1], num_grid_interval + 1)),
+        Tensor.ones(num_spline, dtype=dtypes.float32),
+        Tensor(
+            np.linspace(domain[0], domain[1], num_grid_intervals + 1, dtype=np.float32)
+        ),
     )
-    coef = Tensor.normal(num_spline, num_grid_interval + spline_order, mean=0, std=1)
+    coef = Tensor.normal(
+        num_spline,
+        num_grid_intervals + spline_order,
+        mean=0,
+        std=1,
+        dtype=dtypes.float32,
+    )
     y_eval = coef2curve(x_eval, grids, coef, order=spline_order)
 
     x_eval = x_eval[0].numpy()
     y_eval = y_eval[0].numpy()
-    plt.plot(x_eval, y_eval, "o")
+
+    plt.plot(x_eval, y_eval)
     plt.show()
